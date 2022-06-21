@@ -1,36 +1,49 @@
-# Welcome to Jekyll!
-#
-# This config file is meant for settings that affect your whole blog, values
-# which you are expected to set up once and rarely edit after that. If you find
-# yourself editing this file very often, consider using Jekyll's data files
-# feature for the data you need to update frequently.
-#
-# For technical reasons, this file is *NOT* reloaded automatically when you use
-# 'bundle exec jekyll serve'. If you change this file, please restart the server process.
-#
-# If you need help with YAML syntax, here are some quick references for you: 
-# https://learn-the-web.algonquindesign.ca/topics/markdown-yaml-cheat-sheet/#yaml
-# https://learnxinyminutes.com/docs/yaml/
-#
-# Site settings
-# These are used to personalize your new site. If you look in the HTML files,
-# you will see them accessed via {{ site.title }}, {{ site.email }}, and so on.
-# You can create any custom variable you would like, and they will be accessible
-# in the templates via {{ site.myvariable }}.
 
+locale: "ko-KR"
 title: '@mrlee323'
+tagline: 'Blog'
 email: mrlee3233@gamil.com
 description: >- # this means to ignore newlines until "baseurl:"
   Software Engineer for web frontend
 baseurl: "" # the subpath of your site, e.g. /blog
 url: "https://mrlee323.github.io" # the base hostname & protocol for your site, e.g. http://example.com
-twitter_username: ""
+repository: "https://github.com/mrlee323/mrlee323.github.io"
 github_username:  mrlee323
 
+
 # Build settings
-theme: minima
+highlighter: rouge
+paginate: 5
+permalink: /:categories/:title/
+
+defaults:
+  - scope:
+      path: ""
+      type: posts
+    values:
+      toc: true
+      toc_sticky: true
+      toc_label: "contents"
+
+toc:
+  min_level: 1
+  max_level: 6
+  ordered_list: false
+  no_toc_section_class: no_toc_section
+  list_id: toc
+  list_class: section-nav
+  sublist_class: ''
+  item_class: toc-entry
+  item_prefix: toc-
+
 plugins:
   - jekyll-feed
+  - jekyll-paginate
+  - jekyll-toc
+
+
+
+
 
 # Exclude from processing.
 # The following items will not be processed, by default.
