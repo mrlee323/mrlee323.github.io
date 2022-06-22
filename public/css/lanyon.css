@@ -41,19 +41,16 @@ body {
 }
 
 html {
-  font-family: "Nanum Gothic", "PT Serif", Georgia, "Times New Roman", serif;
+  font-family: "PT Serif", Georgia, "Times New Roman", serif;
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-family: "Nanum Gothic", "PT Sans", Helvetica, Arial, sans-serif;
-  font-weight: 700;
+  font-family: "PT Sans", Helvetica, Arial, sans-serif;
+  font-weight: 400;
   color: #313131;
   letter-spacing: -.025rem;
 }
 
-h1{
-  font-weight: 800;
-}
 
 /*
  * Wrapper
@@ -308,16 +305,7 @@ a.sidebar-nav-item:focus {
 .page,
 .post {
   margin-bottom: 4em;
-  font-size: 16px;
-  line-height: 1.9;
 }
-
-.post-list {
-    margin-bottom: 4em;
-      font-size: 16px;
-line-height: 1.9;
-}
-
 
 /* Blog post or page title */
 .page-title,
@@ -328,10 +316,6 @@ line-height: 1.9;
 .page-title,
 .post-title {
   margin-top: 0;
-}
-
-.section-nav{
-  display: none;
 }
 
 /* Meta data line below post title */
@@ -367,69 +351,6 @@ line-height: 1.9;
   color: inherit;
 }
 
-.toc {
-  position: absolute;
-  right: 0px;
-  width: 240px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-left: 0.75rem;
-  padding-right: 0.75rem;
-  padding-top: 0.25rem;
-  padding-bottom: 0.25rem;
-  margin-right: 0px;
-  font-size: .8rem;
-  border-left: 2px solid #e0d9e7;
-  display: none;
-}
-
-@media (min-width: 75em) {
-  .toc{
-    width: 240px;
-    display: block;
-  }
-}
-
-@media (min-width: 85em) {
-  .toc{
-    width: 300px;
-    display: block;
-  }
-}
-
-@media (min-width: 95em) {
-  .toc{
-    width: 360px;
-    display: block;
-  }
-}
-
-.toc ul {
-  list-style-type: none;
-  margin-bottom: 0.1rem;
-  padding-left: 0rem;
-}
-
-.toc ul li {
-  padding-left: .5rem;
-}
-.toc a {
-  color: #313131;
-  line-height: 2;
-  text-decoration: none;
-}
-
-.toc a:hover {
-  font-weight: bold;
-  color: #2b76ff;
-}
-
-.toc a.toc-active {
-  font-weight: bold;
-  transition: all 0.125s ease-in 0s;
-  font-size: .85rem;
-  color: #2b76ff;
-}
 
 /*
  * Pagination

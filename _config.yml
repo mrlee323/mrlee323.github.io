@@ -1,68 +1,22 @@
+# Setup
+title:               Lanyon
+tagline:             'A Jekyll theme'
+description:         'A reserved <a href="https://jekyllrb.com" target="_blank">Jekyll</a> theme that places the utmost gravity on content with a hidden drawer. Made by <a href="https://twitter.com/mdo" target="_blank">@mdo</a>.'
+url:                 http://lanyon.getpoole.com
+baseurl:             ''
+paginate:            5
+permalink:           pretty
 
-locale: "ko-KR"
-title: '@mrlee323'
-tagline: 'Blog'
-email: mrlee3233@gamil.com
-description: >- # this means to ignore newlines until "baseurl:"
-  Software Engineer for web frontend
-baseurl: "" # the subpath of your site, e.g. /blog
-url: "https://mrlee323.github.io" # the base hostname & protocol for your site, e.g. http://example.com
-repository: "https://github.com/mrlee323/mrlee323.github.io"
-github_username:  mrlee323
+# About/contact
+author:
+  name:              Mark Otto
+  url:               https://twitter.com/mdo
+  email:             markdotto@gmail.com
 
-
-# Build settings
-highlighter: rouge
-paginate: 5
-permalink: /:categories/:title/
-futuer: true
-published: true
-
-defaults:
-  - scope:
-      path: ""
-      type: posts
-    values:
-      toc: true
-      toc_sticky: true
-      toc_label: "contents"
-
-toc:
-  min_level: 1
-  max_level: 6
-  ordered_list: false
-  no_toc_section_class: no_toc_section
-  list_id: toc
-  list_class: section-nav
-  sublist_class: ''
-  item_class: toc-entry
-  item_prefix: toc-
-
+# Gems
 plugins:
-  - jekyll-feed
   - jekyll-paginate
-  - jekyll-toc
 
-
-
-
-
-# Exclude from processing.
-# The following items will not be processed, by default.
-# Any item listed under the `exclude:` key here will be automatically added to
-# the internal "default list".
-#
-# Excluded items can be processed by explicitly listing the directories or
-# their entries' file path in the `include:` list.
-#
-# exclude:
-#   - .sass-cache/
-#   - .jekyll-cache/
-#   - gemfiles/
-#   - Gemfile
-#   - Gemfile.lock
-#   - node_modules/
-#   - vendor/bundle/
-#   - vendor/cache/
-#   - vendor/gems/
-#   - vendor/ruby/
+# Custom vars
+version:             1.1.0
+google_analytics_id: #UA-XXXX-Y
