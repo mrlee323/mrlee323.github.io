@@ -14,7 +14,7 @@ github_username:  mrlee323
 # Build settings
 highlighter: rouge
 paginate: 5
-permalink: /:categories/:title/
+# permalink: /:categories/:title/
 futuer: true
 published: true
 
