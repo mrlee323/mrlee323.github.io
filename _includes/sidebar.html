@@ -1,10 +1,16 @@
 <!-- Target for toggling the sidebar `.sidebar-checkbox` is for regular
      styles, `#sidebar-checkbox` for behavior. -->
-<input type="checkbox" class="sidebar-checkbox" id="sidebar-checkbox">
+<input type="checkbox" class="sidebar-checkbox" id="sidebar-checkbox" {% if page.title=="Home" %}checked{% endif %}>
 
 <!-- Toggleable sidebar -->
 <div class="sidebar" id="sidebar">
   <div class="sidebar-item">
+    <p>Mirim Lee</p>
+    <div style="display:flex">
+      <p style="margin-right: 10px">Contact Me</p>
+      <a href="https://github.com/mrlee323" target="_blank" style="margin-right: 10px"><img src="/public/img/github-icon.svg" alt="github"></a>
+      <a href="mailto:mrlee3233@gmail.com"><img src="/public/img/mail-icon.svg" alt="mail"></a>
+    </div>
     <p>{{ site.description }}</p>
   </div>
 
@@ -24,10 +30,19 @@
         {% endif %}
       {% endif %}
     {% endfor %}
-
-    <a class="sidebar-nav-item" href="{{ site.github.repo }}/archive/v{{ site.version }}.zip">Download</a>
-    <a class="sidebar-nav-item" href="{{ site.github.repo }}">GitHub project</a>
-    <span class="sidebar-nav-item">Currently v{{ site.version }}</span>
+    <div class="site-category">
+      <ul style="list-style: none;">
+        {% assign pages_list = site.pages %}
+        {% for node in pages_list %}
+        {% if node.title != null %}
+        {% if node.layout == "category" %}
+        <li style="height: 1.5rem;"><a class="category-link {% if page.url == node.url %} active{% endif %}"
+            href="{{ site.baseurl }}{{ node.url }}">{{ node.title }}</a></li>
+        {% endif %}
+        {% endif %}
+        {% endfor %}
+      </ul>
+    </div>
   </nav>
 
   <div class="sidebar-item">

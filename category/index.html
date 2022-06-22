@@ -1,0 +1,18 @@
+---
+layout: page
+title: Categories
+categories : ['Algorithm','React','TypeScript','Vue','Javascript','HTML&CSS','Programming', 'Git','Firebase', 'TIL', 'ETC']
+---
+  {% for category in page.categories %}
+    <h2 class="page-title">{{ category }}</h2>
+    <ul class="post-list" style="margin-bottom:1rem;">
+      {% for post in site.categories[category] %}
+        <li style="list-style: none;">
+          <a href="{{ site.baseurl }}{{ post.url }}">
+            {{ post.title }}
+          </a>
+          <small>{{ post.date | date_to_string }}</small>
+        </li>
+      {% endfor %}
+    </ul>
+  {% endfor %}
