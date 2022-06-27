@@ -10,7 +10,7 @@ title: About
 
 <p>
   <span style="font-weight: 700">contact</span> : <a href="mailto:mrlee3233@gmail.com" >mrlee3233@gmail.com</a><br/>
-  <span style="font-weight: 700">github</span> :  <a hef="https://github.com/mrlee323" target="_blank">https://github.com/mrlee323 </a>
+  <span style="font-weight: 700">github</span> :  <a href="https://github.com/mrlee323" target="_blank">https://github.com/mrlee323</a>
 </p>
 
 
