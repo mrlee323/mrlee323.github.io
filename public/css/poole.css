@@ -150,11 +150,11 @@ abbr[title] {
 /* Code */
 code,
 pre {
-  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-family: 'D2 coding', "Consolas", monospace;
 }
 code {
   padding: .25em .5em;
-  font-size: 85%;
+  font-size: 90%;
   color: #bf616a;
   background-color: #f9f9f9;
   border-radius: 3px;
@@ -163,9 +163,9 @@ pre {
   display: block;
   margin-top: 0;
   margin-bottom: 1rem;
-  padding: 1rem;
-  font-size: .8rem;
-  line-height: 1.4;
+  padding: 1.7rem;
+  font-size: .83rem;
+  line-height: 1.8;
   white-space: pre;
   white-space: pre-wrap;
   word-break: break-all;
@@ -177,6 +177,15 @@ pre code {
   font-size: 100%;
   color: inherit;
   background-color: transparent;
+}
+
+:not(pre)>code {
+  font-size: 100%;
+  padding: 1px 10px;
+  border-radius: 13px;
+  margin: 0 3px;
+  color: black !important;
+  background: #d2d8e5;
 }
 
 /* Pygments via Jekyll */
