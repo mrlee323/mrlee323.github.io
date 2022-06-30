@@ -2,7 +2,7 @@
 layout: post
 title: "[자료구조] Linked List"
 data: '2021-06-30'
-category: [Aloorithm]
+category: [Algorithm]
 ---
 
 - 연결 리스트
