@@ -65,4 +65,4 @@ db에서 가져오는 데이터에 대한 타입은 따로 파일을 생성하�
 
 ## 배포
 
-https://wanted-preonboarding-movie-info-site.vercel.app/
+<a href="https://wanted-preonboarding-movie-info-site.vercel.app/">https://wanted-preonboarding-movie-info-site.vercel.app/</a>

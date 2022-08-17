@@ -12,7 +12,7 @@ category: [React]
 이번 프로젝트에서는 React Query와 Recoil을 사용하기로했다. 이렇게 두가지를 사용하게 된이유는 비동기 통신과 전역 상태 관리를 구분하여 관리하기 위함이다.
 
 참고  
-https://techblog.woowahan.com/6339/
+<a href="https://techblog.woowahan.com/6339/">https://techblog.woowahan.com/6339/</a>
 
 이 글을 보고 많은 깨달음을 얻었던 것 같다. 그동안 나는 store라는 개념이 api 요청하여 그 데이터를 전역으로 상태를 관리하는 것이라고 생각했다. 그런데 이 글에서 보면 store는 client 상태관리의 역할로, 비동기 통신은 store에서 분리해서 server 상태관리로 각 역할에 맡게 사용한다는 것이다.
 
@@ -72,7 +72,7 @@ React Query에서는 unique Key를 만들어서 각 데이터를 접근할 수 �
 
 ## 배포
 
-https://wanted-preonboarding-ad-platform.vercel.app/
+<a href="https://wanted-preonboarding-ad-platform.vercel.app/">https://wanted-preonboarding-ad-platform.vercel.app/</a>
 
 <p align="center">
 <img src="https://user-images.githubusercontent.com/92876884/185012352-43874c18-beaf-483b-b5f1-0c2cb56f307d.png" alt="ad_platform" >
