@@ -38,6 +38,24 @@ layout 최상단에만 fixed를 주고 <code>grid-template</code>를 사용하�
 
 처음 파트를 담당하게 되었을때 크게 어렵지 않을거라 생각했는데, 나중에 하나하나 정리하다보니 form 작성시 validation과 만들기와 수정이 같은 컴포넌트를 재사용해야한다는 점등 고려해야하는 부분들이 생겼다.
 
+<광고생성>
+
+<p align="center">
+<img src="https://user-images.githubusercontent.com/92876884/185268209-ac27c7af-6dfe-47a5-adc6-b9f47688d4cd.gif" alt="광고생성" >
+</p>
+
+<광고 수정/삭제>
+
+<p align="center">
+<img src="https://user-images.githubusercontent.com/92876884/185268206-fadf8549-dbcf-49b8-b40d-caf035787b6a.gif" alt="광고 수정/삭제" >
+</p>
+
+<광고상태 필터링>
+
+<p align="center">
+<img src="https://user-images.githubusercontent.com/92876884/185268202-6b8b3dda-35ef-404f-b372-e1937b6c90b5.gif" alt="광고상태 필터링" >
+</p>
+
 ### 1) 광고 만들기 Form / 수정
 
 form을 구현할때 validation이 필요해서 react-hook-form을 사용해서 구현했다. 각 input에 이벤트를 만들어 validation을 체크하지 않아도 돼서 간단하게 구현할 수 있었다. validation은 react-hook-form으로도 가능하지만 여러개를 적용하면 코드가 너무 길어지는 면이 있어, react-hook-form과 같이 많이 사용하는 yup을 통해 좀더 간단하게 정리할수 있었다.
