@@ -12,7 +12,7 @@ category: [React]
 그래서 이번에는 각 컴포넌트에 기능에 초점을 맞춰 컴포넌트를 먼저 구현하고 하나하나 조립해서 사용하듯 구현을 했다. 이렇게 컴포넌트에 초점을 맞춰서 코딩을 하다보니 컴포넌트 자체에 기능을 파악하고 어떻게 방향을 잡아야할지 명확했다.
 
 <p align="center">
- <img src="https://user-images.githubusercontent.com/92876884/185265631-f6d12212-860c-4026-bffb-4302288325f1.gif" alt="스케줄생성" >
+ <img width='100%' src="https://user-images.githubusercontent.com/92876884/185265631-f6d12212-860c-4026-bffb-4302288325f1.gif" alt="스케줄생성" >
 </p>
 
 ## 1. 공통 컴포넌트 구현
@@ -57,7 +57,7 @@ json-server를 이번 과정에서 처음 사용해보는 것이어서 get요청
 
 특정 시간을 찾고 싶은데 PM에서 AM으로 넘어가는것을 어떻게 처리해야할지 방법을 찾지 못했다. 아무리 찾아도 해결이 되지않았는데, 한참후에야 내가 구현 조건에 PM 11시까지만 스케줄생성이 된다는 조건이 있었다. PM 11시 이후에 스케줄 생성시 Error 처리하면 금방해결되는 문제였다.
 
-<중복확인>
+#### 중복확인
 
 ```js
 export const getFilterSchedules = async (

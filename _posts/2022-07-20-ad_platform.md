@@ -38,22 +38,22 @@ layout 최상단에만 fixed를 주고 <code>grid-template</code>를 사용하�
 
 처음 파트를 담당하게 되었을때 크게 어렵지 않을거라 생각했는데, 나중에 하나하나 정리하다보니 form 작성시 validation과 만들기와 수정이 같은 컴포넌트를 재사용해야한다는 점등 고려해야하는 부분들이 생겼다.
 
-<광고생성>
+#### 광고생성
 
 <p align="center">
-<img src="https://user-images.githubusercontent.com/92876884/185268209-ac27c7af-6dfe-47a5-adc6-b9f47688d4cd.gif" alt="광고생성" >
+<img width="100%" src="https://user-images.githubusercontent.com/92876884/185268209-ac27c7af-6dfe-47a5-adc6-b9f47688d4cd.gif" alt="광고생성" >
 </p>
 
-<광고 수정/삭제>
+#### 광고 수정/삭제
 
 <p align="center">
-<img src="https://user-images.githubusercontent.com/92876884/185268206-fadf8549-dbcf-49b8-b40d-caf035787b6a.gif" alt="광고 수정/삭제" >
+<img width="100%" src="https://user-images.githubusercontent.com/92876884/185268206-fadf8549-dbcf-49b8-b40d-caf035787b6a.gif" alt="광고 수정/삭제" >
 </p>
 
-<광고상태 필터링>
+#### 광고상태 필터링
 
 <p align="center">
-<img src="https://user-images.githubusercontent.com/92876884/185268202-6b8b3dda-35ef-404f-b372-e1937b6c90b5.gif" alt="광고상태 필터링" >
+<img width="100%" src="https://user-images.githubusercontent.com/92876884/185268202-6b8b3dda-35ef-404f-b372-e1937b6c90b5.gif" alt="광고상태 필터링" >
 </p>
 
 ### 1) 광고 만들기 Form / 수정
