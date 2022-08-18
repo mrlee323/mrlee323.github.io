@@ -86,8 +86,6 @@ export const getFilterSchedules = async (
 
 ## 3. 스켈줄 생성 post 요청
 
-<post 요청>
-
 ```js
 export const postSchedules = async (data: ISchedule[]) => {
   const request = data.map((schedule) =>
