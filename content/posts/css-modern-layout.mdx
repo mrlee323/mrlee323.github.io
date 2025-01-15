@@ -1,0 +1,215 @@
+---
+title: "CSS 모던 레이아웃 완전 정복: Grid, Subgrid, has() 선택자"
+date: "2025-01-15"
+category: "cssdesign"
+excerpt: "CSS Grid의 Subgrid, :has() 선택자, 논리적 속성 등 모던 CSS 레이아웃 기능을 실전 예제와 함께 완전히 정복합니다. 복잡한 레이아웃도 이제 CSS만으로 해결하세요."
+tags: ["CSS", "Grid", "Subgrid", "has()", "Layout"]
+readingTime: 11
+---
+
+## 모던 CSS 레이아웃의 혁신
+
+2025년 현재, CSS는 JavaScript 없이도 이전에 불가능했던 레이아웃을 구현할 수 있을 만큼 발전했습니다. Grid Subgrid, `:has()` 선택자, Container Queries, 논리적 속성 등 최신 CSS 기능들을 살펴보겠습니다.
+
+## CSS Grid 완전 활용
+
+### 기본 Grid 복습
+
+```css
+.grid-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+```
+
+### Subgrid: 중첩 그리드의 정렬 문제 해결
+
+Subgrid는 자식 요소가 부모의 그리드 트랙을 공유할 수 있게 해줍니다.
+
+```css
+/* 부모 그리드 */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+}
+
+/* 자식 카드가 부모 그리드 행을 상속 */
+.card {
+  display: grid;
+  grid-row: span 3;
+  grid-template-rows: subgrid; /* 핵심! */
+}
+
+.card-image { /* 첫 번째 행 */ }
+.card-title { /* 두 번째 행 */ }
+.card-action { /* 세 번째 행 - 항상 하단 정렬 */ }
+```
+
+이전에는 JavaScript나 Flexbox 해킹으로 해결했던 "카드 내부 요소를 그리드 행에 정렬"을 순수 CSS로 해결합니다.
+
+```html
+<!-- HTML -->
+<div class="card-grid">
+  <article class="card">
+    <img class="card-image" src="..." />
+    <h2 class="card-title">짧은 제목</h2>
+    <button class="card-action">더 보기</button>
+  </article>
+  <article class="card">
+    <img class="card-image" src="..." />
+    <h2 class="card-title">매우 긴 제목이 두 줄을 차지하는 경우에도 버튼은 항상 같은 행에</h2>
+    <button class="card-action">더 보기</button>
+  </article>
+</div>
+```
+
+## :has() 선택자: CSS의 "부모 선택자"
+
+`:has()`는 CSS 역사상 가장 혁명적인 기능 중 하나입니다. 특정 자식을 포함한 부모를 선택할 수 있습니다.
+
+### 기본 사용법
+
+```css
+/* 이미지를 포함한 카드만 스타일링 */
+.card:has(img) {
+  padding-top: 0;
+}
+
+/* 체크된 체크박스가 있는 폼 그룹 */
+.form-group:has(input:checked) {
+  background: #f0fdf4;
+  border-color: #22c55e;
+}
+
+/* 에러가 있는 입력 필드의 레이블 */
+label:has(+ input:invalid) {
+  color: red;
+}
+```
+
+### 실전 예제: 조건부 레이아웃
+
+```css
+/* 자식이 3개 이상이면 3열, 아니면 2열 */
+.grid:has(> :nth-child(3)) {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+/* 열린 네비게이션이 있을 때 body 스크롤 잠금 */
+body:has(nav.open) {
+  overflow: hidden;
+}
+
+/* 비어있지 않은 장바구니 표시 */
+.cart-icon:has(~ .cart-items:not(:empty))::after {
+  content: '';
+  display: block;
+  /* 알림 dot 표시 */
+}
+```
+
+### 다크모드 토글 (JavaScript 없이!)
+
+```css
+/* 체크박스 상태에 따라 테마 변경 */
+html:has(#theme-toggle:checked) {
+  --bg: #0d1117;
+  --text: #f0f6fc;
+}
+
+html:not(:has(#theme-toggle:checked)) {
+  --bg: #ffffff;
+  --text: #1a1a1a;
+}
+```
+
+## Container Queries와 Grid 조합
+
+```css
+.card-container {
+  container-type: inline-size;
+}
+
+/* 컨테이너 너비에 따라 그리드 열 수 변경 */
+@container (min-width: 600px) {
+  .card-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@container (min-width: 900px) {
+  .card-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+```
+
+## 논리적 속성 (Logical Properties)
+
+국제화를 고려한 현대적 CSS 작성법입니다.
+
+```css
+/* 기존 물리적 속성 → 논리적 속성 */
+margin-left: 1rem;   → margin-inline-start: 1rem;
+margin-right: 1rem;  → margin-inline-end: 1rem;
+margin-top: 1rem;    → margin-block-start: 1rem;
+margin-bottom: 1rem; → margin-block-end: 1rem;
+
+/* 단축형 */
+padding: 1rem 2rem;  → padding: 1rem 2rem; (동일)
+padding-block: 1rem;
+padding-inline: 2rem;
+```
+
+아랍어, 히브리어 등 RTL 언어를 지원할 때 레이아웃이 자동으로 반전됩니다.
+
+## 새로운 색상 공간과 함수
+
+```css
+:root {
+  /* oklch: 더 균일한 색상 공간 */
+  --primary: oklch(70% 0.2 220);
+  --primary-light: oklch(85% 0.15 220);
+  --primary-dark: oklch(50% 0.25 220);
+}
+
+/* color-mix: CSS에서 색상 혼합 */
+.button {
+  background: color-mix(in srgb, var(--primary) 80%, white);
+}
+
+.button:hover {
+  background: color-mix(in srgb, var(--primary) 90%, black);
+}
+```
+
+## 실전 레이아웃: 복잡한 대시보드
+
+```css
+.dashboard {
+  display: grid;
+  grid-template-areas:
+    "header header header"
+    "sidebar main aside"
+    "footer footer footer";
+  grid-template-columns: 240px 1fr 320px;
+  grid-template-rows: 64px 1fr 80px;
+  min-height: 100vh;
+}
+
+/* Subgrid로 내부 정렬 */
+.main-content {
+  grid-area: main;
+  display: grid;
+  grid-template-rows: subgrid;
+}
+
+/* :has()로 사이드바 열림/닫힘 반응 */
+.dashboard:has(.sidebar.collapsed) {
+  grid-template-columns: 64px 1fr 320px;
+}
+```
+
+모던 CSS 레이아웃 기능들은 이전에는 JavaScript에 의존했던 많은 UI 패턴을 순수 CSS로 해결할 수 있게 해줍니다. 특히 `:has()`와 Subgrid는 프론트엔드 개발의 패러다임을 바꾸고 있습니다.
