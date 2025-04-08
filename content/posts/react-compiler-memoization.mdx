@@ -1,0 +1,234 @@
+---
+title: "React Compiler와 자동 메모이제이션: useMemo/useCallback이 필요없어진다?"
+date: "2025-04-08"
+category: "react"
+excerpt: "React 19와 함께 등장한 React Compiler(구 React Forget)의 작동 원리와 자동 메모이제이션을 알아봅니다. 기존의 useMemo, useCallback 패턴이 어떻게 변하는지 실제 코드로 비교합니다."
+tags: ["React", "React Compiler", "Memoization", "Performance", "React 19"]
+readingTime: 10
+---
+
+## React Compiler란?
+
+React Compiler(이전 이름: React Forget)는 React 19와 함께 공개된 빌드 타임 최적화 도구입니다. 컴파일러가 자동으로 컴포넌트와 훅을 분석해 불필요한 리렌더링을 방지하는 코드를 삽입합니다.
+
+즉, 개발자가 `useMemo`와 `useCallback`을 직접 작성할 필요 없이 컴파일러가 자동으로 처리합니다.
+
+## 이전 방식 vs React Compiler
+
+### 기존 방식 (수동 메모이제이션)
+
+```tsx
+function ProductList({ products, onAddToCart }: Props) {
+  // 비싼 연산을 useMemo로 캐싱
+  const sortedProducts = useMemo(
+    () => [...products].sort((a, b) => a.price - b.price),
+    [products]
+  );
+
+  // 콜백을 useCallback으로 안정화
+  const handleAddToCart = useCallback(
+    (productId: string) => {
+      onAddToCart(productId);
+    },
+    [onAddToCart]
+  );
+
+  return (
+    <ul>
+      {sortedProducts.map((product) => (
+        <ProductItem
+          key={product.id}
+          product={product}
+          onAddToCart={handleAddToCart}
+        />
+      ))}
+    </ul>
+  );
+}
+```
+
+### React Compiler 방식 (자동 메모이제이션)
+
+```tsx
+// 컴파일러가 자동으로 최적화 - useMemo/useCallback 불필요
+function ProductList({ products, onAddToCart }: Props) {
+  const sortedProducts = [...products].sort((a, b) => a.price - b.price);
+
+  const handleAddToCart = (productId: string) => {
+    onAddToCart(productId);
+  };
+
+  return (
+    <ul>
+      {sortedProducts.map((product) => (
+        <ProductItem
+          key={product.id}
+          product={product}
+          onAddToCart={handleAddToCart}
+        />
+      ))}
+    </ul>
+  );
+}
+```
+
+컴파일러가 빌드 시 자동으로 메모이제이션 코드를 추가합니다.
+
+## React Compiler 설정
+
+```bash
+npm install babel-plugin-react-compiler
+```
+
+```javascript
+// babel.config.js
+module.exports = {
+  plugins: [
+    ['babel-plugin-react-compiler', {
+      target: '19', // React 버전
+    }],
+  ],
+};
+```
+
+Next.js에서는 더 간단합니다:
+
+```typescript
+// next.config.ts
+const nextConfig = {
+  experimental: {
+    reactCompiler: true,
+  },
+};
+```
+
+## 컴파일러가 최적화하는 것들
+
+### 1. 파생 값 캐싱 (useMemo 대체)
+
+```tsx
+// Before
+const expensiveValue = useMemo(() => heavyComputation(input), [input]);
+
+// After (컴파일러가 자동 처리)
+const expensiveValue = heavyComputation(input);
+```
+
+### 2. 콜백 안정화 (useCallback 대체)
+
+```tsx
+// Before
+const handler = useCallback(() => {
+  doSomething(dep);
+}, [dep]);
+
+// After
+const handler = () => {
+  doSomething(dep);
+};
+```
+
+### 3. 컴포넌트 리렌더링 방지 (React.memo 대체)
+
+```tsx
+// Before
+const MemoizedComponent = React.memo(function Component({ value }: Props) {
+  return <div>{value}</div>;
+});
+
+// After - 컴파일러가 자동으로 최적화
+function Component({ value }: Props) {
+  return <div>{value}</div>;
+}
+```
+
+## 컴파일러가 최적화하지 못하는 경우
+
+React Compiler는 React의 규칙을 따르는 코드만 최적화할 수 있습니다.
+
+### 1. Side Effect가 있는 렌더링 중 실행
+
+```tsx
+// ❌ 컴파일러가 최적화 불가
+function BadComponent({ id }: Props) {
+  // 렌더링 중에 외부 상태 변경 - 규칙 위반
+  globalCache[id] = computeValue(id);
+  return <div>{globalCache[id]}</div>;
+}
+
+// ✅ useEffect로 분리
+function GoodComponent({ id }: Props) {
+  const [value, setValue] = useState(null);
+
+  useEffect(() => {
+    globalCache[id] = computeValue(id);
+    setValue(globalCache[id]);
+  }, [id]);
+
+  return <div>{value}</div>;
+}
+```
+
+### 2. React 규칙 위반
+
+```tsx
+// ❌ Hook을 조건부로 호출 - 컴파일러 최적화 불가
+function BadHookUsage({ show }: Props) {
+  if (show) {
+    const data = useData(); // 규칙 위반
+  }
+  return <div />;
+}
+```
+
+## React Compiler Playground로 확인
+
+React 팀에서 제공하는 [Playground](https://playground.react.dev)에서 컴파일러가 코드를 어떻게 변환하는지 확인할 수 있습니다.
+
+```tsx
+// 입력 코드
+function Counter() {
+  const [count, setCount] = useState(0);
+  const doubled = count * 2; // 컴파일러가 캐싱
+
+  return (
+    <button onClick={() => setCount(c => c + 1)}>
+      {count} (doubled: {doubled})
+    </button>
+  );
+}
+
+// 컴파일러 출력 (간략화)
+function Counter() {
+  const $ = _c(3);
+  const [count, setCount] = useState(0);
+
+  let doubled;
+  if ($[0] !== count) { // 이전 값과 비교
+    doubled = count * 2;
+    $[0] = count;
+    $[1] = doubled;
+  } else {
+    doubled = $[1];
+  }
+
+  // ...
+}
+```
+
+## 마이그레이션 전략
+
+기존 프로젝트에 React Compiler를 점진적으로 도입하는 방법:
+
+```tsx
+// 특정 컴포넌트만 컴파일러 비활성화
+function LegacyComponent() {
+  "use no memo"; // 이 지시문으로 컴파일러 최적화 비활성화
+  
+  // 기존 방식 유지
+  const value = useMemo(() => compute(), []);
+  return <div>{value}</div>;
+}
+```
+
+React Compiler는 React 개발의 패러다임을 크게 바꿉니다. 성능 최적화에 쏟던 에너지를 비즈니스 로직에 집중할 수 있게 되었습니다. 단, React의 기본 규칙을 올바르게 따르는 것이 더욱 중요해졌습니다.
