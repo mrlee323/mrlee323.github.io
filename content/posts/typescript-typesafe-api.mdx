@@ -1,0 +1,256 @@
+---
+title: "TypeScript로 type-safe한 API 클라이언트 만들기"
+date: "2025-05-20"
+category: "typescript"
+excerpt: "Zod, tRPC, 그리고 순수 TypeScript를 활용해 완전한 타입 안전성을 갖춘 API 클라이언트를 구축하는 방법을 알아봅니다. 런타임 유효성 검사와 타입 추론을 함께 사용하는 패턴을 소개합니다."
+tags: ["TypeScript", "API", "Zod", "tRPC", "Type Safety"]
+readingTime: 13
+---
+
+## Type-safe API 클라이언트의 중요성
+
+API 연동에서 타입 안전성이 없으면 런타임에서야 에러를 발견하게 됩니다. TypeScript 타입은 컴파일 타임에만 존재하므로, 실제 API 응답이 예상과 다를 때는 무방비 상태입니다.
+
+## 접근 방법 비교
+
+### 1. 순수 TypeScript (불완전)
+
+```typescript
+// 타입은 있지만 런타임 검증 없음
+interface User {
+  id: string;
+  name: string;
+  email: string;
+}
+
+async function getUser(id: string): Promise<User> {
+  const response = await fetch(`/api/users/${id}`);
+  return response.json() as User; // ← 위험! 실제 데이터가 User 타입인지 모름
+}
+```
+
+### 2. Zod를 활용한 런타임 검증
+
+```typescript
+import { z } from 'zod';
+
+// 스키마 정의 (타입 + 런타임 검증 동시에)
+const UserSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  email: z.string().email(),
+  role: z.enum(['admin', 'user', 'guest']),
+  createdAt: z.string().datetime(),
+  profile: z.object({
+    bio: z.string().optional(),
+    avatarUrl: z.string().url().optional(),
+  }).optional(),
+});
+
+// 타입 자동 추론
+type User = z.infer<typeof UserSchema>;
+
+// 런타임 검증과 타입 안전성 모두 보장
+async function getUser(id: string): Promise<User> {
+  const response = await fetch(`/api/users/${id}`);
+  const data = await response.json();
+  
+  // parse: 실패하면 ZodError throw
+  return UserSchema.parse(data);
+  
+  // safeParse: 실패해도 throw하지 않음
+  // const result = UserSchema.safeParse(data);
+  // if (!result.success) throw new Error(result.error.message);
+  // return result.data;
+}
+```
+
+## API 클라이언트 설계
+
+### 기본 구조
+
+```typescript
+// lib/api-client.ts
+import { z } from 'zod';
+
+type ApiConfig = {
+  baseUrl: string;
+  headers?: Record<string, string>;
+};
+
+type RequestOptions<T extends z.ZodTypeAny> = {
+  schema: T;
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  body?: unknown;
+};
+
+class ApiClient {
+  private config: ApiConfig;
+
+  constructor(config: ApiConfig) {
+    this.config = config;
+  }
+
+  async request<T extends z.ZodTypeAny>(
+    endpoint: string,
+    options: RequestOptions<T>
+  ): Promise<z.infer<T>> {
+    const { schema, method = 'GET', body } = options;
+
+    const response = await fetch(`${this.config.baseUrl}${endpoint}`, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.config.headers,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    if (!response.ok) {
+      throw new ApiError(response.status, await response.text());
+    }
+
+    const data = await response.json();
+    return schema.parse(data);
+  }
+
+  // 편의 메서드
+  get<T extends z.ZodTypeAny>(endpoint: string, schema: T) {
+    return this.request(endpoint, { schema });
+  }
+
+  post<T extends z.ZodTypeAny>(endpoint: string, body: unknown, schema: T) {
+    return this.request(endpoint, { schema, method: 'POST', body });
+  }
+}
+
+class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+```
+
+### API 서비스 레이어
+
+```typescript
+// services/user-service.ts
+const UserSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string().email(),
+});
+
+const PaginatedUsersSchema = z.object({
+  users: z.array(UserSchema),
+  total: z.number(),
+  page: z.number(),
+  pageSize: z.number(),
+});
+
+export type User = z.infer<typeof UserSchema>;
+
+const client = new ApiClient({ baseUrl: '/api' });
+
+export const userService = {
+  getAll: (page = 1) =>
+    client.get(`/users?page=${page}`, PaginatedUsersSchema),
+
+  getById: (id: string) =>
+    client.get(`/users/${id}`, UserSchema),
+
+  create: (data: Omit<User, 'id'>) =>
+    client.post('/users', data, UserSchema),
+};
+```
+
+## tRPC: 끝에서 끝까지 타입 안전성
+
+tRPC는 백엔드와 프론트엔드 사이의 타입을 자동으로 공유합니다.
+
+```typescript
+// server/router.ts
+import { z } from 'zod';
+import { router, publicProcedure } from './trpc';
+
+export const userRouter = router({
+  getAll: publicProcedure
+    .input(z.object({ page: z.number().default(1) }))
+    .query(async ({ input }) => {
+      return getUsers(input.page);
+    }),
+
+  getById: publicProcedure
+    .input(z.string())
+    .query(async ({ input: id }) => {
+      const user = await getUserById(id);
+      if (!user) throw new TRPCError({ code: 'NOT_FOUND' });
+      return user;
+    }),
+
+  update: publicProcedure
+    .input(z.object({
+      id: z.string(),
+      data: z.object({
+        name: z.string().optional(),
+        email: z.string().email().optional(),
+      }),
+    }))
+    .mutation(async ({ input }) => {
+      return updateUser(input.id, input.data);
+    }),
+});
+```
+
+```tsx
+// 클라이언트 - 타입이 자동으로 추론됨
+function UserList() {
+  const { data } = trpc.user.getAll.useQuery({ page: 1 });
+  // data 타입이 서버 코드에서 자동으로 추론됨!
+
+  return (
+    <ul>
+      {data?.users.map((user) => (
+        // user.name, user.email 등 자동완성 지원
+        <li key={user.id}>{user.name}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+## Zod 고급 패턴
+
+### 변환(transform)
+
+```typescript
+const DateStringSchema = z.string().transform((str) => new Date(str));
+
+const ApiResponseSchema = z.object({
+  id: z.string(),
+  createdAt: DateStringSchema, // 문자열을 Date 객체로 변환
+});
+
+type ApiResponse = z.infer<typeof ApiResponseSchema>;
+// { id: string; createdAt: Date } - 자동으로 Date 타입으로 추론
+```
+
+### 조건부 검증
+
+```typescript
+const PaymentSchema = z.discriminatedUnion('method', [
+  z.object({
+    method: z.literal('card'),
+    cardNumber: z.string().length(16),
+    cvv: z.string().length(3),
+  }),
+  z.object({
+    method: z.literal('bank'),
+    accountNumber: z.string(),
+    bankCode: z.string(),
+  }),
+]);
+```
+
+Type-safe API 클라이언트는 초기 설정이 조금 번거롭지만, 런타임 에러를 컴파일 타임에 잡을 수 있어 장기적으로 개발 생산성을 크게 높입니다.
