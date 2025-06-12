@@ -1,0 +1,212 @@
+---
+title: "Next.js 성능 최적화: 이미지, 폰트, 번들 크기 줄이기"
+date: "2025-06-12"
+category: "nextjs"
+excerpt: "Next.js 앱의 성능을 극대화하는 실전 최적화 기법을 알아봅니다. next/image, next/font 활용, 번들 분석, 코드 스플리팅, 캐싱 전략까지 단계별로 설명합니다."
+tags: ["Next.js", "Performance", "Image Optimization", "Bundle", "Caching"]
+readingTime: 10
+---
+
+## 성능 최적화의 시작: 측정
+
+최적화하기 전에 먼저 현재 상태를 측정해야 합니다.
+
+```bash
+# Lighthouse CI로 성능 측정
+npm install -g @lhci/cli
+lhci autorun
+
+# Bundle Analyzer로 번들 크기 분석
+npm install @next/bundle-analyzer
+```
+
+```typescript
+// next.config.ts
+const withBundleAnalyzer = require('@next/bundle-analyzer')({
+  enabled: process.env.ANALYZE === 'true',
+});
+
+export default withBundleAnalyzer({
+  // ...config
+});
+```
+
+```bash
+ANALYZE=true npm run build
+```
+
+## next/image로 이미지 최적화
+
+```tsx
+import Image from 'next/image';
+
+// 기본 최적화 (자동 WebP 변환, lazy loading)
+<Image
+  src="/hero.jpg"
+  alt="Hero image"
+  width={1200}
+  height={600}
+  priority // LCP 이미지에는 priority 추가
+  sizes="(max-width: 768px) 100vw, 50vw"
+/>
+
+// 동적 이미지
+<Image
+  src={user.avatarUrl}
+  alt={user.name}
+  width={48}
+  height={48}
+  className="rounded-full"
+/>
+```
+
+### 외부 이미지 도메인 설정
+
+```typescript
+// next.config.ts
+const nextConfig = {
+  images: {
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'images.example.com',
+        pathname: '/uploads/**',
+      },
+    ],
+  },
+};
+```
+
+## next/font로 폰트 최적화
+
+```typescript
+// 구글 폰트 - 자동으로 self-hosted, font-display: swap
+import { Inter, JetBrains_Mono } from 'next/font/google';
+
+const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
+  display: 'swap',
+});
+
+const mono = JetBrains_Mono({
+  subsets: ['latin'],
+  variable: '--font-mono',
+  weight: ['400', '600', '700'],
+});
+
+// layout.tsx에서 적용
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html className={`${inter.variable} ${mono.variable}`}>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+폰트 파일이 자동으로 최적화되어 FOUT(Flash of Unstyled Text)가 제거됩니다.
+
+## 코드 스플리팅과 동적 임포트
+
+```tsx
+import dynamic from 'next/dynamic';
+
+// 클라이언트 전용 컴포넌트 지연 로딩
+const HeavyChart = dynamic(() => import('./HeavyChart'), {
+  loading: () => <ChartSkeleton />,
+  ssr: false, // 서버에서 렌더링 제외
+});
+
+// 조건부 로딩 (사용자가 기능 사용 시에만 로드)
+const RichEditor = dynamic(() => import('./RichEditor'), {
+  loading: () => <p>에디터 로딩 중...</p>,
+});
+
+function PostEditor({ isEditing }: { isEditing: boolean }) {
+  return isEditing ? <RichEditor /> : <PostView />;
+}
+```
+
+## 캐싱 전략
+
+```typescript
+// 페이지별 revalidate 설정
+export const revalidate = 3600; // 1시간마다 재생성
+
+// 개별 fetch 캐싱
+async function getPost(slug: string) {
+  const data = await fetch(`/api/posts/${slug}`, {
+    next: {
+      revalidate: 86400, // 24시간 캐시
+      tags: [`post-${slug}`], // 태그 기반 재검증
+    },
+  });
+  return data.json();
+}
+
+// 캐시 무효화 (Server Action에서)
+import { revalidateTag } from 'next/cache';
+
+async function updatePost(slug: string, data: PostData) {
+  await updatePostInDB(slug, data);
+  revalidateTag(`post-${slug}`); // 해당 태그 캐시 무효화
+}
+```
+
+## 번들 크기 줄이기
+
+### 트리 쉐이킹
+
+```typescript
+// ❌ 전체 lodash 임포트
+import _ from 'lodash';
+const result = _.groupBy(items, 'category');
+
+// ✅ 필요한 함수만 임포트
+import groupBy from 'lodash/groupBy';
+const result = groupBy(items, 'category');
+
+// ✅ 더 좋은 방법: 네이티브 API 활용
+const result = Object.groupBy(items, (item) => item.category);
+```
+
+### 서버 컴포넌트로 클라이언트 번들 감소
+
+```tsx
+// 무거운 라이브러리를 서버에서만 실행
+// app/posts/page.tsx (Server Component)
+import { unified } from 'unified'; // 번들에 포함되지 않음
+import remarkParse from 'remark-parse';
+import remarkHtml from 'remark-html';
+
+export default async function PostsPage() {
+  const posts = await getPosts();
+  // unified는 서버에서만 실행되어 클라이언트 번들 크기 0
+  return <PostList posts={posts} />;
+}
+```
+
+## 성능 모니터링
+
+```typescript
+// 웹 바이탈 측정
+export function reportWebVitals(metric: NextWebVitalsMetric) {
+  switch (metric.name) {
+    case 'LCP':
+      console.log('LCP:', metric.value);
+      break;
+    case 'INP':
+      console.log('INP:', metric.value);
+      break;
+    case 'CLS':
+      console.log('CLS:', metric.value);
+      break;
+  }
+
+  // 분석 서비스로 전송
+  sendToAnalytics(metric);
+}
+```
+
+성능 최적화는 측정 → 분석 → 개선 → 재측정의 반복입니다. next/image와 next/font만 올바르게 사용해도 상당한 성능 향상을 얻을 수 있습니다.
