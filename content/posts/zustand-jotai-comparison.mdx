@@ -1,0 +1,208 @@
+---
+title: "Zustand와 Jotai로 상태 관리 패러다임 전환하기"
+date: "2025-07-01"
+category: "react"
+excerpt: "Redux의 복잡성 없이 가벼운 상태 관리를 원한다면? Zustand와 Jotai를 비교하고 각각의 강점과 적합한 사용 케이스를 알아봅니다. 실제 프로젝트 마이그레이션 경험도 공유합니다."
+tags: ["React", "Zustand", "Jotai", "State Management", "Redux"]
+readingTime: 11
+---
+
+## Redux를 떠나는 이유
+
+Redux는 강력하지만 보일러플레이트가 너무 많습니다. 단순한 전역 상태 하나를 추가하려면 action, reducer, selector, 타입까지 여러 파일을 수정해야 합니다.
+
+Zustand와 Jotai는 이 문제를 다른 방식으로 해결합니다.
+
+## Zustand: Store 기반 접근
+
+Zustand는 단일 store에 상태와 액션을 함께 정의합니다.
+
+### 기본 사용법
+
+```typescript
+import { create } from 'zustand';
+
+interface CartItem {
+  id: string;
+  name: string;
+  price: number;
+  quantity: number;
+}
+
+interface CartStore {
+  items: CartItem[];
+  addItem: (item: Omit<CartItem, 'quantity'>) => void;
+  removeItem: (id: string) => void;
+  updateQuantity: (id: string, quantity: number) => void;
+  clearCart: () => void;
+  total: () => number;
+}
+
+export const useCartStore = create<CartStore>((set, get) => ({
+  items: [],
+
+  addItem: (item) =>
+    set((state) => {
+      const existing = state.items.find((i) => i.id === item.id);
+      if (existing) {
+        return {
+          items: state.items.map((i) =>
+            i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i
+          ),
+        };
+      }
+      return { items: [...state.items, { ...item, quantity: 1 }] };
+    }),
+
+  removeItem: (id) =>
+    set((state) => ({
+      items: state.items.filter((i) => i.id !== id),
+    })),
+
+  updateQuantity: (id, quantity) =>
+    set((state) => ({
+      items: quantity === 0
+        ? state.items.filter((i) => i.id !== id)
+        : state.items.map((i) => (i.id === id ? { ...i, quantity } : i)),
+    })),
+
+  clearCart: () => set({ items: [] }),
+
+  total: () => get().items.reduce((sum, i) => sum + i.price * i.quantity, 0),
+}));
+```
+
+### 컴포넌트에서 사용
+
+```tsx
+function CartButton() {
+  // 필요한 상태만 선택적으로 구독
+  const items = useCartStore((state) => state.items);
+  const addItem = useCartStore((state) => state.addItem);
+  const total = useCartStore((state) => state.total());
+
+  return (
+    <div>
+      <button onClick={() => addItem({ id: '1', name: '상품', price: 10000 })}>
+        장바구니 추가
+      </button>
+      <p>총 {items.length}개 | ₩{total.toLocaleString()}</p>
+    </div>
+  );
+}
+```
+
+### Zustand 고급 기능
+
+```typescript
+import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import { immer } from 'zustand/middleware/immer';
+
+// localStorage에 자동 저장
+export const useSettingsStore = create(
+  persist(
+    immer<SettingsStore>((set) => ({
+      theme: 'dark',
+      language: 'ko',
+      setTheme: (theme) =>
+        set((state) => {
+          state.theme = theme; // immer로 직접 변경
+        }),
+    })),
+    {
+      name: 'settings-storage',
+      storage: createJSONStorage(() => localStorage),
+    }
+  )
+);
+```
+
+## Jotai: Atom 기반 접근
+
+Jotai는 작은 원자(atom)들로 상태를 구성합니다. Recoil에서 영감을 받았지만 훨씬 가볍습니다.
+
+### 기본 사용법
+
+```typescript
+import { atom, useAtom, useAtomValue, useSetAtom } from 'jotai';
+
+// 원자 정의
+export const countAtom = atom(0);
+export const textAtom = atom('');
+
+// 파생 atom (computed)
+export const doubledCountAtom = atom((get) => get(countAtom) * 2);
+
+// 비동기 atom
+export const userAtom = atom(async () => {
+  const response = await fetch('/api/user');
+  return response.json();
+});
+```
+
+### 컴포넌트에서 사용
+
+```tsx
+function Counter() {
+  const [count, setCount] = useAtom(countAtom);
+  const doubled = useAtomValue(doubledCountAtom); // 읽기 전용
+
+  return (
+    <div>
+      <p>{count} (doubled: {doubled})</p>
+      <button onClick={() => setCount((c) => c + 1)}>+1</button>
+    </div>
+  );
+}
+
+// setCount만 필요하면 리렌더링 최소화
+function IncrementButton() {
+  const increment = useSetAtom(countAtom);
+  return <button onClick={() => increment((c) => c + 1)}>+</button>;
+}
+```
+
+### Atom Family (동적 atom)
+
+```typescript
+import { atomFamily } from 'jotai/utils';
+
+// 각 사용자별 독립적인 atom
+const userAtomFamily = atomFamily((userId: string) =>
+  atom(async () => {
+    const response = await fetch(`/api/users/${userId}`);
+    return response.json();
+  })
+);
+
+function UserCard({ userId }: { userId: string }) {
+  const user = useAtomValue(userAtomFamily(userId));
+  return <div>{user.name}</div>;
+}
+```
+
+## Zustand vs Jotai 비교
+
+| 특성 | Zustand | Jotai |
+|------|---------|-------|
+| 패러다임 | Store 기반 (중앙화) | Atom 기반 (분산) |
+| 번들 크기 | ~1.2kb | ~4.5kb |
+| 학습 곡선 | 낮음 | 중간 |
+| 리렌더링 최적화 | 수동 (selector) | 자동 (atom 단위) |
+| 비동기 지원 | 직접 구현 | 네이티브 지원 |
+| DevTools | 지원 | 지원 |
+
+## 언제 무엇을 선택할까?
+
+**Zustand를 선택할 때:**
+- 도메인별 관련 상태를 하나의 store로 묶고 싶을 때
+- Redux에서 마이그레이션할 때 (유사한 패턴)
+- 미들웨어 (persist, immer)가 많이 필요할 때
+
+**Jotai를 선택할 때:**
+- 각 컴포넌트가 필요한 상태만 독립적으로 구독하길 원할 때
+- 비동기 상태를 Suspense와 함께 사용할 때
+- 세밀한 리렌더링 최적화가 필요할 때
+
+둘 다 뛰어난 라이브러리입니다. 프로젝트 특성에 맞게 선택하거나, 같은 프로젝트에서 Zustand(전역 앱 상태)와 Jotai(UI 컴포넌트 상태)를 함께 사용하는 것도 좋은 전략입니다.
