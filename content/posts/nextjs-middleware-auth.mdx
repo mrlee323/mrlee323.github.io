@@ -1,0 +1,222 @@
+---
+title: "Next.js 미들웨어로 인증 구현하기: Edge Runtime 활용"
+date: "2025-07-22"
+category: "nextjs"
+excerpt: "Next.js Middleware를 사용해 Edge Runtime에서 인증을 처리하는 방법을 알아봅니다. JWT 검증, 역할 기반 접근 제어, 인증 리다이렉트를 미들웨어 하나로 구현합니다."
+tags: ["Next.js", "Middleware", "Authentication", "Edge Runtime", "JWT"]
+readingTime: 10
+---
+
+## 미들웨어 기반 인증의 장점
+
+Next.js Middleware는 Edge Runtime에서 실행되어 페이지 렌더링 전에 인증을 처리할 수 있습니다. 이를 통해:
+
+- 인증되지 않은 사용자를 서버 렌더링 없이 즉시 리다이렉트
+- 역할 기반 접근 제어(RBAC)를 중앙화
+- 글로벌 CDN에서 실행되어 레이턴시 최소화
+
+## 기본 미들웨어 설정
+
+```typescript
+// middleware.ts (루트 디렉토리)
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+export function middleware(request: NextRequest) {
+  const token = request.cookies.get('auth-token')?.value;
+
+  // 로그인이 필요한 경로 보호
+  if (!token && request.nextUrl.pathname.startsWith('/dashboard')) {
+    const loginUrl = new URL('/login', request.url);
+    loginUrl.searchParams.set('callbackUrl', request.nextUrl.pathname);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  return NextResponse.next();
+}
+
+// 미들웨어가 실행될 경로 설정
+export const config = {
+  matcher: [
+    '/dashboard/:path*',
+    '/admin/:path*',
+    '/api/protected/:path*',
+  ],
+};
+```
+
+## JWT 토큰 검증
+
+Edge Runtime에서는 Node.js 기본 `crypto` 모듈을 사용하거나 Web Crypto API를 사용합니다.
+
+```typescript
+// lib/auth/edge-jwt.ts
+export async function verifyJWT(token: string, secret: string): Promise<boolean> {
+  try {
+    const [header, payload, signature] = token.split('.');
+    
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+
+    const data = new TextEncoder().encode(`${header}.${payload}`);
+    const sig = Buffer.from(signature, 'base64url');
+
+    const isValid = await crypto.subtle.verify('HMAC', key, sig, data);
+    
+    if (!isValid) return false;
+
+    // 만료 시간 확인
+    const decoded = JSON.parse(atob(payload));
+    if (decoded.exp && decoded.exp < Date.now() / 1000) return false;
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function decodeJWT(token: string): Record<string, unknown> {
+  const payload = token.split('.')[1];
+  return JSON.parse(atob(payload));
+}
+```
+
+## 역할 기반 접근 제어
+
+```typescript
+// middleware.ts
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { verifyJWT, decodeJWT } from './lib/auth/edge-jwt';
+
+type UserRole = 'admin' | 'editor' | 'viewer';
+
+const ROUTE_PERMISSIONS: Record<string, UserRole[]> = {
+  '/admin': ['admin'],
+  '/dashboard/settings': ['admin', 'editor'],
+  '/dashboard': ['admin', 'editor', 'viewer'],
+};
+
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  const token = request.cookies.get('auth-token')?.value;
+
+  // 보호된 경로 확인
+  const requiredRoles = Object.entries(ROUTE_PERMISSIONS).find(
+    ([route]) => pathname.startsWith(route)
+  )?.[1];
+
+  if (!requiredRoles) return NextResponse.next();
+
+  // 토큰 없으면 로그인 페이지로
+  if (!token) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
+  // 토큰 검증
+  const isValid = await verifyJWT(token, process.env.JWT_SECRET!);
+  if (!isValid) {
+    const response = NextResponse.redirect(new URL('/login', request.url));
+    response.cookies.delete('auth-token'); // 만료된 토큰 제거
+    return response;
+  }
+
+  // 권한 확인
+  const decoded = decodeJWT(token);
+  const userRole = decoded.role as UserRole;
+
+  if (!requiredRoles.includes(userRole)) {
+    return NextResponse.redirect(new URL('/403', request.url));
+  }
+
+  // 사용자 정보를 헤더로 전달 (Server Components에서 사용)
+  const response = NextResponse.next();
+  response.headers.set('x-user-id', decoded.sub as string);
+  response.headers.set('x-user-role', userRole);
+
+  return response;
+}
+```
+
+## Server Component에서 사용자 정보 활용
+
+```tsx
+// app/dashboard/page.tsx
+import { headers } from 'next/headers';
+
+export default async function DashboardPage() {
+  const headersList = await headers();
+  const userId = headersList.get('x-user-id');
+  const userRole = headersList.get('x-user-role');
+
+  // 미들웨어에서 전달된 정보 활용
+  const userData = await getUserById(userId!);
+
+  return (
+    <div>
+      <h1>대시보드</h1>
+      <p>안녕하세요, {userData.name}님 ({userRole})</p>
+      {userRole === 'admin' && <AdminPanel />}
+    </div>
+  );
+}
+```
+
+## NextAuth.js와 미들웨어 통합
+
+```typescript
+// middleware.ts (NextAuth.js v5 사용 시)
+import { auth } from './auth';
+
+export default auth((req) => {
+  const { nextUrl, auth: session } = req;
+
+  const isLoggedIn = !!session;
+  const isAdminRoute = nextUrl.pathname.startsWith('/admin');
+
+  if (isAdminRoute && (!isLoggedIn || session?.user?.role !== 'admin')) {
+    return Response.redirect(new URL('/login', nextUrl));
+  }
+});
+
+export const config = {
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+};
+```
+
+## API 라우트 보호
+
+```typescript
+// middleware.ts에서 API도 함께 보호
+export async function middleware(request: NextRequest) {
+  // API 라우트 인증
+  if (request.nextUrl.pathname.startsWith('/api/protected')) {
+    const authHeader = request.headers.get('authorization');
+    const token = authHeader?.replace('Bearer ', '');
+
+    if (!token) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
+    const isValid = await verifyJWT(token, process.env.JWT_SECRET!);
+    if (!isValid) {
+      return NextResponse.json(
+        { error: 'Invalid token' },
+        { status: 401 }
+      );
+    }
+  }
+
+  return NextResponse.next();
+}
+```
+
+Next.js Middleware는 인증 로직을 중앙화하고 Edge Runtime의 성능을 활용할 수 있는 강력한 도구입니다. 복잡한 인증 로직도 미들웨어 하나로 깔끔하게 처리할 수 있습니다.
