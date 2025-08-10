@@ -1,0 +1,245 @@
+---
+title: "Web Vitals 최적화 실전: LCP, INP, CLS 개선 전략"
+date: "2025-08-10"
+category: "cssdesign"
+excerpt: "Core Web Vitals의 세 가지 핵심 지표인 LCP, INP, CLS를 실제로 개선하는 방법을 알아봅니다. 측정 도구 사용법부터 각 지표별 최적화 기법까지 실전 예제와 함께 설명합니다."
+tags: ["Web Vitals", "LCP", "INP", "CLS", "Performance", "Core Web Vitals"]
+readingTime: 12
+---
+
+## Core Web Vitals란?
+
+Google이 정의한 웹 성능의 핵심 지표로, 검색 엔진 순위에도 영향을 미칩니다.
+
+- **LCP (Largest Contentful Paint)**: 가장 큰 콘텐츠가 렌더링되는 시간 (목표: 2.5초 이하)
+- **INP (Interaction to Next Paint)**: 사용자 상호작용 응답 시간 (목표: 200ms 이하)
+- **CLS (Cumulative Layout Shift)**: 레이아웃 이동 누적 점수 (목표: 0.1 이하)
+
+## LCP 최적화
+
+### 1. 이미지 최적화
+
+LCP 요소는 대부분 이미지입니다.
+
+```tsx
+// ❌ 최적화 전
+<img src="/hero.jpg" alt="Hero" />
+
+// ✅ Next.js next/image 활용
+import Image from 'next/image';
+
+<Image
+  src="/hero.jpg"
+  alt="Hero"
+  width={1200}
+  height={600}
+  priority  // LCP 이미지에 필수!
+  sizes="100vw"
+  quality={85}
+/>
+```
+
+### 2. 리소스 힌트
+
+```html
+<!-- HTML head에 추가 -->
+<link rel="preload" href="/hero.jpg" as="image" fetchpriority="high" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="dns-prefetch" href="https://api.example.com" />
+```
+
+```tsx
+// Next.js layout.tsx에서
+export default function RootLayout() {
+  return (
+    <html>
+      <head>
+        <link
+          rel="preload"
+          href="/fonts/Pretendard.woff2"
+          as="font"
+          type="font/woff2"
+          crossOrigin="anonymous"
+        />
+      </head>
+      <body>...</body>
+    </html>
+  );
+}
+```
+
+### 3. 서버 응답 시간 단축
+
+```typescript
+// React Cache로 동일 요청 중복 제거
+import { cache } from 'react';
+
+export const getUser = cache(async (id: string) => {
+  return db.user.findUnique({ where: { id } });
+});
+```
+
+## INP 최적화
+
+INP는 FID(First Input Delay)를 대체한 새 지표입니다. 모든 상호작용의 응답 시간을 측정합니다.
+
+### 1. Long Task 분리
+
+```typescript
+// ❌ 메인 스레드 차단
+function handleClick() {
+  const result = heavyComputation(); // 500ms 걸리는 작업
+  updateUI(result);
+}
+
+// ✅ setTimeout으로 분리
+function handleClick() {
+  // UI를 먼저 업데이트
+  setLoading(true);
+  
+  // 비싼 작업은 다음 프레임으로
+  setTimeout(() => {
+    const result = heavyComputation();
+    updateUI(result);
+    setLoading(false);
+  }, 0);
+}
+
+// ✅ scheduler.postTask (모던 브라우저)
+function handleClick() {
+  setLoading(true);
+  
+  scheduler.postTask(
+    () => {
+      const result = heavyComputation();
+      updateUI(result);
+    },
+    { priority: 'background' }
+  );
+}
+```
+
+### 2. useTransition으로 우선순위 설정
+
+```tsx
+import { useTransition, useState } from 'react';
+
+function SearchInput() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [isPending, startTransition] = useTransition();
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // 입력은 즉시 업데이트
+    setQuery(e.target.value);
+
+    // 검색 결과는 낮은 우선순위로 처리
+    startTransition(() => {
+      const filtered = searchItems(e.target.value);
+      setResults(filtered);
+    });
+  };
+
+  return (
+    <>
+      <input value={query} onChange={handleChange} />
+      {isPending && <Spinner />}
+      <SearchResults results={results} />
+    </>
+  );
+}
+```
+
+### 3. 이벤트 핸들러 최적화
+
+```tsx
+// ❌ 매번 새 함수 생성 (작은 성능 문제)
+<button onClick={() => handleAction(id)}>클릭</button>
+
+// ✅ useCallback으로 안정화
+const handleClick = useCallback(
+  (id: string) => handleAction(id),
+  [handleAction]
+);
+
+<button onClick={() => handleClick(id)}>클릭</button>
+```
+
+## CLS 최적화
+
+레이아웃 이동은 사용자 경험을 크게 해칩니다.
+
+### 1. 이미지와 비디오에 크기 명시
+
+```tsx
+// ❌ 크기 없음 → CLS 발생
+<img src="/product.jpg" alt="Product" />
+
+// ✅ 크기 명시
+<img src="/product.jpg" alt="Product" width={300} height={300} />
+
+// ✅ CSS aspect-ratio
+<div style={{ aspectRatio: '16/9' }}>
+  <img src="/video-thumbnail.jpg" style={{ width: '100%', height: '100%' }} />
+</div>
+```
+
+### 2. 스켈레톤 UI
+
+```tsx
+function ProductCard({ id }: { id: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['product', id],
+    queryFn: () => getProduct(id),
+  });
+
+  // ✅ 로딩 중에도 같은 크기의 placeholder
+  if (isLoading) {
+    return (
+      <div className="product-card animate-pulse">
+        <div className="h-48 bg-gray-200 rounded" />
+        <div className="h-4 bg-gray-200 rounded mt-2 w-3/4" />
+        <div className="h-4 bg-gray-200 rounded mt-1 w-1/2" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="product-card">
+      <img src={data.image} width={300} height={192} />
+      <h3>{data.name}</h3>
+      <p>{data.price}</p>
+    </div>
+  );
+}
+```
+
+### 3. 동적 콘텐츠 공간 예약
+
+```css
+/* 광고나 배너가 로드되기 전 공간 예약 */
+.ad-banner {
+  min-height: 90px;
+  /* 콘텐츠 로드 후 크기가 변해도 이미 예약된 공간에서 */
+}
+
+/* 폰트 로딩 중 레이아웃 이동 방지 */
+@font-face {
+  font-family: 'Custom Font';
+  font-display: optional; /* FOUT 없이 대체 폰트 사용 */
+  src: url('/fonts/custom.woff2') format('woff2');
+}
+```
+
+## 성능 측정 자동화
+
+```javascript
+// 실제 사용자 데이터 수집
+import { onLCP, onINP, onCLS } from 'web-vitals';
+
+onLCP((metric) => sendToAnalytics({ name: 'LCP', value: metric.value }));
+onINP((metric) => sendToAnalytics({ name: 'INP', value: metric.value }));
+onCLS((metric) => sendToAnalytics({ name: 'CLS', value: metric.value }));
+```
+
+Core Web Vitals는 단순한 성능 지표가 아니라 실제 사용자 경험을 직접 측정합니다. 각 지표를 이해하고 체계적으로 개선하면 사용자 만족도와 검색 순위를 동시에 높일 수 있습니다.
