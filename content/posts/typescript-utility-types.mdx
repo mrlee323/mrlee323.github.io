@@ -1,0 +1,235 @@
+---
+title: "TypeScript 유틸리티 타입 완전 정복: Mapped Types와 Conditional Types"
+date: "2025-08-30"
+category: "typescript"
+excerpt: "TypeScript의 고급 타입 시스템을 마스터합니다. Mapped Types, Conditional Types, Template Literal Types를 활용해 재사용 가능하고 표현력 있는 타입을 만드는 방법을 알아봅니다."
+tags: ["TypeScript", "Mapped Types", "Conditional Types", "Utility Types"]
+readingTime: 14
+---
+
+## TypeScript 유틸리티 타입의 세계
+
+TypeScript의 내장 유틸리티 타입들(`Partial`, `Required`, `Pick`, `Omit` 등)은 실제로 Mapped Types와 Conditional Types를 사용해 구현되어 있습니다. 내부 동작을 이해하면 직접 강력한 커스텀 유틸리티 타입을 만들 수 있습니다.
+
+## Mapped Types
+
+### 기본 개념
+
+```typescript
+// 모든 프로퍼티를 선택적으로 만드는 Partial 구현
+type MyPartial<T> = {
+  [K in keyof T]?: T[K];
+};
+
+// 모든 프로퍼티를 읽기 전용으로
+type MyReadonly<T> = {
+  readonly [K in keyof T]: T[K];
+};
+
+// 프로퍼티 타입 변환
+type Stringify<T> = {
+  [K in keyof T]: string;
+};
+```
+
+### 고급 Mapped Types
+
+```typescript
+// 특정 값 타입의 키만 추출
+type KeysOfType<T, V> = {
+  [K in keyof T]: T[K] extends V ? K : never;
+}[keyof T];
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  age: number;
+  isActive: boolean;
+}
+
+type StringKeys = KeysOfType<User, string>;
+// "name" | "email"
+
+type NumberKeys = KeysOfType<User, number>;
+// "id" | "age"
+```
+
+### 프로퍼티 remapping (TypeScript 4.1+)
+
+```typescript
+// 모든 프로퍼티 이름에 "get" prefix 추가
+type Getters<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K];
+};
+
+interface User {
+  name: string;
+  age: number;
+}
+
+type UserGetters = Getters<User>;
+// {
+//   getName: () => string;
+//   getAge: () => number;
+// }
+```
+
+## Conditional Types
+
+### 기본 구문
+
+```typescript
+// T extends U ? X : Y
+type IsString<T> = T extends string ? true : false;
+
+type A = IsString<string>; // true
+type B = IsString<number>; // false
+```
+
+### infer 키워드
+
+```typescript
+// 함수의 반환 타입 추출 (내장 ReturnType 구현)
+type MyReturnType<T> = T extends (...args: unknown[]) => infer R ? R : never;
+
+// 배열 요소 타입 추출
+type ElementType<T> = T extends Array<infer E> ? E : never;
+
+type A = ElementType<string[]>; // string
+type B = ElementType<User[]>;   // User
+
+// Promise 언래핑
+type Awaited<T> = T extends Promise<infer U> ? Awaited<U> : T;
+
+type C = Awaited<Promise<Promise<string>>>; // string
+```
+
+### 분산 조건부 타입
+
+```typescript
+type ToArray<T> = T extends unknown ? T[] : never;
+
+type A = ToArray<string | number>;
+// string[] | number[]  ← 유니언으로 분산됨!
+
+// 분산을 막으려면 대괄호 사용
+type ToArrayNonDist<T> = [T] extends [unknown] ? T[] : never;
+type B = ToArrayNonDist<string | number>;
+// (string | number)[]
+```
+
+## Template Literal Types
+
+```typescript
+type EventName<T extends string> = `on${Capitalize<T>}`;
+type MouseEvents = EventName<'click' | 'mousedown' | 'mouseup'>;
+// "onClick" | "onMousedown" | "onMouseup"
+
+// API 엔드포인트 타입 생성
+type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
+type ApiEndpoint = `/${string}`;
+type ApiRoute = `${HttpMethod} ${ApiEndpoint}`;
+
+const route: ApiRoute = 'GET /users'; // ✅
+const invalid: ApiRoute = 'PATCH /users'; // ❌
+```
+
+## 실전 커스텀 유틸리티 타입
+
+### DeepPartial
+
+```typescript
+type DeepPartial<T> = T extends object
+  ? { [P in keyof T]?: DeepPartial<T[P]> }
+  : T;
+
+interface Config {
+  server: {
+    host: string;
+    port: number;
+    ssl: {
+      enabled: boolean;
+      cert: string;
+    };
+  };
+  database: {
+    url: string;
+  };
+}
+
+// 깊이 중첩된 모든 속성을 선택적으로
+function updateConfig(partial: DeepPartial<Config>) {
+  // server.ssl.enabled만 변경해도 OK
+}
+```
+
+### PickByValue
+
+```typescript
+type PickByValue<T, V> = {
+  [K in keyof T as T[K] extends V ? K : never]: T[K];
+};
+
+interface Form {
+  name: string;
+  age: number;
+  email: string;
+  score: number;
+  isActive: boolean;
+}
+
+type StringFields = PickByValue<Form, string>;
+// { name: string; email: string }
+
+type NumberFields = PickByValue<Form, number>;
+// { age: number; score: number }
+```
+
+### Paths (중첩 객체 경로 타입)
+
+```typescript
+type Paths<T, Prefix extends string = ''> = {
+  [K in keyof T & string]: T[K] extends object
+    ? Paths<T[K], `${Prefix}${K}.`>
+    : `${Prefix}${K}`;
+}[keyof T & string];
+
+interface Config {
+  server: {
+    host: string;
+    port: number;
+  };
+  database: {
+    url: string;
+  };
+}
+
+type ConfigPaths = Paths<Config>;
+// "server.host" | "server.port" | "database.url"
+
+// 타입 안전한 설정 접근기
+function getConfig(path: ConfigPaths): unknown {
+  // ...
+}
+
+getConfig('server.host'); // ✅
+getConfig('server.invalid'); // ❌
+```
+
+## 타입 테스트
+
+```typescript
+// 타입이 올바른지 컴파일 타임에 검증
+type Assert<T, Expected> = T extends Expected
+  ? Expected extends T
+    ? true
+    : never
+  : never;
+
+// 사용 예
+type Test1 = Assert<MyPartial<User>, Partial<User>>; // true
+type Test2 = Assert<MyReturnType<() => string>, string>; // true
+```
+
+TypeScript의 고급 타입 기능을 이해하면 런타임 에러를 컴파일 타임에 잡을 수 있는 강력한 타입 시스템을 구축할 수 있습니다. 처음에는 복잡해 보이지만, 패턴을 익히면 매우 직관적으로 활용할 수 있습니다.
