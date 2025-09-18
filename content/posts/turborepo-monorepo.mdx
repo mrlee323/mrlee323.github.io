@@ -1,0 +1,239 @@
+---
+title: "Turborepo로 모노레포 구축하기: 빌드 캐시와 태스크 파이프라인"
+date: "2025-09-18"
+category: "nextjs"
+excerpt: "Turborepo를 사용해 Next.js와 공유 패키지를 포함한 모노레포를 설정하는 방법을 알아봅니다. 빌드 캐시, 태스크 파이프라인, 원격 캐시 설정까지 실전 예제와 함께 설명합니다."
+tags: ["Turborepo", "Monorepo", "Next.js", "Build Optimization", "Workspace"]
+readingTime: 11
+---
+
+## 모노레포가 필요한 이유
+
+여러 앱(웹, 어드민, 모바일 웹)이 같은 UI 컴포넌트, 타입, 유틸리티를 공유해야 할 때 모노레포가 효과적입니다.
+
+**기존 문제점:**
+- 공통 코드를 npm 패키지로 배포하면 버전 관리가 복잡
+- 변경 사항이 여러 레포에 분산
+- CI/CD 파이프라인이 중복
+
+**Turborepo가 해결하는 것:**
+- 공통 코드를 워크스페이스로 관리
+- 태스크 파이프라인으로 빌드 순서 최적화
+- 빌드 결과 캐싱으로 CI 속도 향상
+
+## 프로젝트 구조
+
+```
+my-monorepo/
+├── apps/
+│   ├── web/           # Next.js 메인 앱
+│   └── admin/         # Next.js 어드민 앱
+├── packages/
+│   ├── ui/            # 공유 UI 컴포넌트
+│   ├── typescript-config/  # 공유 tsconfig
+│   └── eslint-config/     # 공유 ESLint 설정
+├── package.json       # 루트 (워크스페이스 설정)
+└── turbo.json         # Turborepo 설정
+```
+
+## 초기 설정
+
+```bash
+npx create-turbo@latest my-monorepo
+```
+
+또는 기존 프로젝트에 추가:
+
+```bash
+npm install turbo --save-dev
+```
+
+### 루트 package.json
+
+```json
+{
+  "name": "my-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "test": "turbo test"
+  },
+  "devDependencies": {
+    "turbo": "latest"
+  }
+}
+```
+
+## turbo.json 설정
+
+```json
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "dependsOn": ["^lint"]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": ["coverage/**"]
+    }
+  }
+}
+```
+
+`"dependsOn": ["^build"]` = 이 태스크를 실행하기 전에 모든 의존성의 `build`를 먼저 실행
+
+## 공유 UI 패키지
+
+```typescript
+// packages/ui/src/Button.tsx
+import type { ButtonHTMLAttributes } from 'react';
+import { cn } from './utils';
+
+interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: 'primary' | 'secondary' | 'destructive';
+  size?: 'sm' | 'md' | 'lg';
+}
+
+export function Button({
+  variant = 'primary',
+  size = 'md',
+  className,
+  children,
+  ...props
+}: ButtonProps) {
+  return (
+    <button
+      className={cn(
+        'inline-flex items-center justify-center rounded font-medium',
+        {
+          primary: 'bg-blue-600 text-white hover:bg-blue-700',
+          secondary: 'bg-gray-100 text-gray-900 hover:bg-gray-200',
+          destructive: 'bg-red-600 text-white hover:bg-red-700',
+        }[variant],
+        { sm: 'h-8 px-3 text-sm', md: 'h-10 px-4', lg: 'h-12 px-6 text-lg' }[size],
+        className
+      )}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+```
+
+```json
+// packages/ui/package.json
+{
+  "name": "@my-monorepo/ui",
+  "version": "0.0.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "devDependencies": {
+    "typescript": "latest"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}
+```
+
+### 앱에서 공유 패키지 사용
+
+```json
+// apps/web/package.json
+{
+  "dependencies": {
+    "@my-monorepo/ui": "*"
+  }
+}
+```
+
+```tsx
+// apps/web/app/page.tsx
+import { Button } from '@my-monorepo/ui';
+
+export default function Page() {
+  return <Button variant="primary">클릭</Button>;
+}
+```
+
+## 빌드 캐시
+
+Turborepo의 핵심 기능입니다. 입력 파일이 변경되지 않으면 캐시된 결과를 재사용합니다.
+
+```bash
+# 첫 번째 빌드 (캐시 없음)
+$ turbo build
+Tasks: 2 successful, 2 total
+Cached: 0 cached, 2 total
+Time: 15.2s
+
+# 두 번째 빌드 (캐시 히트)
+$ turbo build
+Tasks: 2 successful, 2 total
+Cached: 2 cached, 2 total  ← 캐시 사용!
+Time: 0.3s  ← 50배 빠름
+```
+
+## 원격 캐시
+
+팀원 간, CI와 로컬 환경 간에 캐시를 공유합니다.
+
+```bash
+# Vercel 원격 캐시 연결
+npx turbo login
+npx turbo link
+```
+
+또는 자체 캐시 서버:
+
+```json
+// turbo.json
+{
+  "remoteCache": {
+    "apiUrl": "https://your-cache-server.com"
+  }
+}
+```
+
+## 실용적인 팁
+
+### 특정 앱만 빌드
+
+```bash
+turbo build --filter=web
+turbo build --filter=./apps/web
+turbo build --filter="[HEAD^1]" # 최근 변경된 패키지만
+```
+
+### 환경 변수 관리
+
+```json
+// turbo.json
+{
+  "tasks": {
+    "build": {
+      "env": ["NODE_ENV", "DATABASE_URL"],
+      "passThroughEnv": ["AWS_SECRET_KEY"]
+    }
+  }
+}
+```
+
+Turborepo는 모노레포 설정의 복잡성을 크게 줄여줍니다. 특히 빌드 캐시와 원격 캐시는 대규모 팀에서 CI 시간을 획기적으로 단축합니다.
