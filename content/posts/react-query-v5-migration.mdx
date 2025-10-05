@@ -1,0 +1,238 @@
+---
+title: "React Query v5 마이그레이션과 새로운 패턴"
+date: "2025-10-05"
+category: "react"
+excerpt: "TanStack Query(React Query) v5로 마이그레이션하는 방법과 v5에서 새롭게 도입된 패턴들을 알아봅니다. 간소화된 API, 개선된 타입 추론, Suspense 통합까지 실전 예제로 설명합니다."
+tags: ["React Query", "TanStack Query", "Data Fetching", "Suspense", "Migration"]
+readingTime: 12
+---
+
+## React Query v5 무엇이 달라졌나?
+
+TanStack Query v5는 API를 크게 단순화하고 TypeScript 지원을 대폭 강화했습니다. v4에서 v5로 마이그레이션하는 방법과 새로운 패턴을 알아보겠습니다.
+
+## 주요 변경 사항
+
+### 1. useQuery 옵션 단순화
+
+```typescript
+// ❌ v4 방식
+const { data } = useQuery(['users'], fetchUsers, {
+  staleTime: 5000,
+  enabled: !!userId,
+});
+
+// ✅ v5 방식 - 객체 하나로 통일
+const { data } = useQuery({
+  queryKey: ['users'],
+  queryFn: fetchUsers,
+  staleTime: 5000,
+  enabled: !!userId,
+});
+```
+
+### 2. useMutation도 동일하게
+
+```typescript
+// ✅ v5
+const mutation = useMutation({
+  mutationFn: createUser,
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ['users'] });
+  },
+});
+```
+
+### 3. 개선된 타입 추론
+
+```typescript
+// v5에서 에러 타입을 직접 지정
+const { data, error } = useQuery<User[], Error>({
+  queryKey: ['users'],
+  queryFn: fetchUsers,
+});
+
+// 또는 queryFn에서 자동 추론
+const { data } = useQuery({
+  queryKey: ['users'],
+  queryFn: async () => {
+    const res = await fetch('/api/users');
+    return res.json() as Promise<User[]>;
+  },
+  // data: User[] 자동 추론
+});
+```
+
+## Suspense 통합
+
+### useSuspenseQuery
+
+```tsx
+import { useSuspenseQuery } from '@tanstack/react-query';
+import { Suspense } from 'react';
+
+// data가 항상 정의됨 (undefined 없음)
+function UserProfile({ userId }: { userId: string }) {
+  const { data: user } = useSuspenseQuery({
+    queryKey: ['user', userId],
+    queryFn: () => getUser(userId),
+  });
+
+  // user는 User 타입 (undefined | User 아님)
+  return <div>{user.name}</div>;
+}
+
+// 부모에서 Suspense + ErrorBoundary로 감싸기
+function ProfilePage({ userId }: { userId: string }) {
+  return (
+    <ErrorBoundary fallback={<ErrorMessage />}>
+      <Suspense fallback={<ProfileSkeleton />}>
+        <UserProfile userId={userId} />
+      </Suspense>
+    </ErrorBoundary>
+  );
+}
+```
+
+### 병렬 쿼리와 Suspense
+
+```tsx
+import { useSuspenseQueries } from '@tanstack/react-query';
+
+function Dashboard({ userId }: { userId: string }) {
+  const [
+    { data: user },
+    { data: posts },
+    { data: comments },
+  ] = useSuspenseQueries({
+    queries: [
+      { queryKey: ['user', userId], queryFn: () => getUser(userId) },
+      { queryKey: ['posts', userId], queryFn: () => getUserPosts(userId) },
+      { queryKey: ['comments', userId], queryFn: () => getUserComments(userId) },
+    ],
+  });
+
+  return (
+    <div>
+      <h1>{user.name}</h1>
+      <p>{posts.length}개의 포스트</p>
+      <p>{comments.length}개의 댓글</p>
+    </div>
+  );
+}
+```
+
+## 낙관적 업데이트
+
+```typescript
+const queryClient = useQueryClient();
+
+const mutation = useMutation({
+  mutationFn: updateTodo,
+  
+  // 낙관적 업데이트
+  onMutate: async (updatedTodo) => {
+    // 진행 중인 리패치 취소
+    await queryClient.cancelQueries({ queryKey: ['todos'] });
+
+    // 이전 값 백업
+    const previousTodos = queryClient.getQueryData<Todo[]>(['todos']);
+
+    // 낙관적으로 업데이트
+    queryClient.setQueryData<Todo[]>(['todos'], (old = []) =>
+      old.map((todo) =>
+        todo.id === updatedTodo.id ? { ...todo, ...updatedTodo } : todo
+      )
+    );
+
+    return { previousTodos };
+  },
+
+  // 에러 시 롤백
+  onError: (error, variables, context) => {
+    if (context?.previousTodos) {
+      queryClient.setQueryData(['todos'], context.previousTodos);
+    }
+  },
+
+  // 성공/실패 후 리패치
+  onSettled: () => {
+    queryClient.invalidateQueries({ queryKey: ['todos'] });
+  },
+});
+```
+
+## 무한 스크롤
+
+```tsx
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInView } from 'react-intersection-observer';
+
+function InfinitePostList() {
+  const { ref, inView } = useInView();
+
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ['posts'],
+    queryFn: ({ pageParam = 1 }) => getPosts(pageParam),
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    initialPageParam: 1,
+  });
+
+  useEffect(() => {
+    if (inView && hasNextPage) {
+      fetchNextPage();
+    }
+  }, [inView, hasNextPage, fetchNextPage]);
+
+  return (
+    <div>
+      {data?.pages.map((page, i) => (
+        <Fragment key={i}>
+          {page.posts.map((post) => (
+            <PostCard key={post.id} post={post} />
+          ))}
+        </Fragment>
+      ))}
+
+      {/* 무한 스크롤 트리거 */}
+      <div ref={ref}>
+        {isFetchingNextPage && <LoadingSpinner />}
+      </div>
+    </div>
+  );
+}
+```
+
+## 쿼리 캐시 구조화
+
+```typescript
+// 일관된 queryKey 구조 정의
+export const queryKeys = {
+  users: {
+    all: () => ['users'] as const,
+    lists: () => [...queryKeys.users.all(), 'list'] as const,
+    list: (filters: UserFilters) => [...queryKeys.users.lists(), { filters }] as const,
+    details: () => [...queryKeys.users.all(), 'detail'] as const,
+    detail: (id: string) => [...queryKeys.users.details(), id] as const,
+  },
+};
+
+// 사용
+useQuery({
+  queryKey: queryKeys.users.detail(userId),
+  queryFn: () => getUser(userId),
+});
+
+// 모든 users 관련 캐시 무효화
+queryClient.invalidateQueries({ queryKey: queryKeys.users.all() });
+
+// 특정 users list만 무효화
+queryClient.invalidateQueries({ queryKey: queryKeys.users.lists() });
+```
+
+React Query v5는 API를 단순화하면서도 더 강력한 기능을 제공합니다. 특히 Suspense 통합과 개선된 TypeScript 지원은 현대적인 React 앱 개발을 훨씬 편리하게 만들어줍니다.
