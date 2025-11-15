@@ -1,0 +1,198 @@
+---
+title: "TypeScript 고급 제네릭 패턴: 타입 안전한 유틸리티 함수 만들기"
+date: "2025-11-15"
+category: "typescript"
+excerpt: "TypeScript 제네릭의 고급 패턴을 마스터합니다. 제약 조건, 기본값, 공변/반변, 고차 제네릭까지 실전에서 바로 쓸 수 있는 예제와 함께 알아봅니다."
+tags: ["TypeScript", "Generics", "Type Safety", "Advanced TypeScript"]
+readingTime: 13
+---
+
+## 제네릭 기초 복습
+
+제네릭은 타입을 매개변수화합니다. `Array<T>`, `Promise<T>` 같은 내장 타입들이 모두 제네릭입니다.
+
+```typescript
+// 기본 제네릭 함수
+function identity<T>(value: T): T {
+  return value;
+}
+
+const str = identity('hello'); // string
+const num = identity(42);      // number
+```
+
+## 제약 조건 (Constraints)
+
+`extends`로 타입 매개변수에 제약을 줄 수 있습니다.
+
+```typescript
+// 길이가 있는 값만 허용
+function getLength<T extends { length: number }>(value: T): number {
+  return value.length;
+}
+
+getLength('hello');    // ✅ 5
+getLength([1, 2, 3]); // ✅ 3
+getLength(42);         // ❌ number에는 length 없음
+
+// 객체의 키로 제한
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+
+const user = { name: '이민이', age: 28 };
+getProperty(user, 'name'); // ✅ string
+getProperty(user, 'role'); // ❌ 존재하지 않는 키
+```
+
+## 제네릭 기본값
+
+```typescript
+interface ApiResponse<T = unknown> {
+  data: T;
+  status: number;
+  message: string;
+}
+
+// 타입 지정
+const response: ApiResponse<User> = { data: user, status: 200, message: 'OK' };
+
+// 기본값 사용
+const genericResponse: ApiResponse = { data: {}, status: 200, message: 'OK' };
+```
+
+## 고급 패턴: 함수 오버로드 대체
+
+```typescript
+// 여러 오버로드 대신 제네릭으로 통일
+function parseJSON<T>(json: string): T {
+  return JSON.parse(json) as T;
+}
+
+const user = parseJSON<User>('{"name": "이민이"}');
+const settings = parseJSON<Settings>('{"theme": "dark"}');
+```
+
+## 조건부 타입과 제네릭 결합
+
+```typescript
+// 배열이면 요소 타입, 아니면 그대로
+type Unwrap<T> = T extends Array<infer U> ? U : T;
+
+type A = Unwrap<string[]>;  // string
+type B = Unwrap<number>;    // number
+type C = Unwrap<User[]>;    // User
+
+// 실전 활용: 비동기 함수의 반환 타입 추출
+type AsyncReturnType<T extends (...args: unknown[]) => Promise<unknown>> =
+  T extends (...args: unknown[]) => Promise<infer R> ? R : never;
+
+async function fetchUser(): Promise<User> {
+  /* ... */
+  return {} as User;
+}
+
+type FetchedUser = AsyncReturnType<typeof fetchUser>; // User
+```
+
+## 고차 제네릭 (Higher-Order Generics)
+
+```typescript
+// 제네릭 함수를 반환하는 함수
+function createEventEmitter<Events extends Record<string, unknown>>() {
+  type Listener<K extends keyof Events> = (event: Events[K]) => void;
+  
+  const listeners = new Map<keyof Events, Listener<keyof Events>[]>();
+
+  return {
+    on<K extends keyof Events>(event: K, listener: Listener<K>) {
+      const existing = listeners.get(event) ?? [];
+      listeners.set(event, [...existing, listener as Listener<keyof Events>]);
+    },
+    emit<K extends keyof Events>(event: K, data: Events[K]) {
+      listeners.get(event)?.forEach((l) => l(data));
+    },
+  };
+}
+
+// 사용
+interface AppEvents {
+  login: { userId: string; timestamp: Date };
+  logout: { userId: string };
+  error: { message: string; code: number };
+}
+
+const emitter = createEventEmitter<AppEvents>();
+
+emitter.on('login', ({ userId, timestamp }) => {
+  // userId: string, timestamp: Date - 자동 추론!
+  console.log(`${userId} logged in at ${timestamp}`);
+});
+
+emitter.emit('login', { userId: 'user1', timestamp: new Date() }); // ✅
+emitter.emit('login', { userId: 'user1' }); // ❌ timestamp 누락
+```
+
+## 타입 안전한 API 빌더
+
+```typescript
+type ApiBuilder<
+  TParams extends Record<string, string> = Record<string, never>,
+  TBody = void,
+  TResponse = unknown
+> = {
+  params: <P extends Record<string, string>>() => ApiBuilder<P, TBody, TResponse>;
+  body: <B>() => ApiBuilder<TParams, B, TResponse>;
+  response: <R>() => ApiBuilder<TParams, TBody, R>;
+  build: () => (
+    params: TParams,
+    body: TBody extends void ? undefined : TBody
+  ) => Promise<TResponse>;
+};
+
+function createApiEndpoint<
+  TParams extends Record<string, string>,
+  TBody,
+  TResponse
+>(
+  url: string,
+  method: string
+): ApiBuilder<TParams, TBody, TResponse>['build'] {
+  return async (params, body) => {
+    const resolvedUrl = Object.entries(params).reduce(
+      (acc, [key, value]) => acc.replace(`:${key}`, value),
+      url
+    );
+    
+    const response = await fetch(resolvedUrl, {
+      method,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    
+    return response.json() as TResponse;
+  };
+}
+
+// 사용
+const getUser = createApiEndpoint<{ id: string }, undefined, User>(
+  '/api/users/:id',
+  'GET'
+);
+
+const user = await getUser({ id: '123' }, undefined);
+// user: User - 완전한 타입 안전성!
+```
+
+## 실전 팁: 제네릭 디버깅
+
+```typescript
+// 타입이 복잡해지면 중간 단계를 명시적으로 확인
+type Debug<T> = T;
+
+type ComplexType = Debug<
+  Awaited<ReturnType<typeof complexFunction>>
+>;
+// IDE에서 ComplexType에 마우스를 올리면 실제 타입 확인 가능
+```
+
+제네릭은 TypeScript의 가장 강력한 기능 중 하나입니다. 처음에는 복잡해 보이지만, 패턴을 익히면 재사용 가능하고 타입 안전한 코드를 작성하는 핵심 도구가 됩니다.
