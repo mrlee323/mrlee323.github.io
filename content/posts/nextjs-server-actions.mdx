@@ -1,0 +1,256 @@
+---
+title: "Next.js Server Actions 실전 패턴: 폼 처리부터 낙관적 업데이트까지"
+date: "2025-11-30"
+category: "nextjs"
+excerpt: "Next.js 15의 Server Actions를 활용해 폼 처리, 데이터 변경, 낙관적 업데이트를 구현합니다. useFormState, useFormStatus, useOptimistic 훅의 실전 활용법을 알아봅니다."
+tags: ["Next.js", "Server Actions", "Forms", "Optimistic Updates", "React 19"]
+readingTime: 11
+---
+
+## Server Actions란?
+
+Server Actions는 클라이언트 컴포넌트에서 서버 함수를 직접 호출할 수 있게 해주는 기능입니다. 별도의 API 라우트 없이 폼 제출과 데이터 변경을 처리할 수 있습니다.
+
+## 기본 Server Action
+
+```typescript
+// app/actions/post.ts
+'use server';
+
+import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
+import { z } from 'zod';
+
+const CreatePostSchema = z.object({
+  title: z.string().min(1, '제목을 입력하세요').max(100),
+  content: z.string().min(10, '내용을 10자 이상 입력하세요'),
+  category: z.enum(['react', 'typescript', 'nextjs', 'cssdesign', 'ai']),
+});
+
+export async function createPost(formData: FormData) {
+  const validatedFields = CreatePostSchema.safeParse({
+    title: formData.get('title'),
+    content: formData.get('content'),
+    category: formData.get('category'),
+  });
+
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+    };
+  }
+
+  await db.post.create({ data: validatedFields.data });
+  
+  revalidatePath('/posts');
+  redirect('/posts');
+}
+```
+
+## 폼과 Server Action 연결
+
+```tsx
+// app/posts/new/page.tsx
+import { createPost } from '@/app/actions/post';
+
+export default function NewPostPage() {
+  return (
+    <form action={createPost}>
+      <div>
+        <label htmlFor="title">제목</label>
+        <input id="title" name="title" type="text" required />
+      </div>
+
+      <div>
+        <label htmlFor="content">내용</label>
+        <textarea id="content" name="content" rows={10} required />
+      </div>
+
+      <select name="category">
+        <option value="react">React</option>
+        <option value="typescript">TypeScript</option>
+        <option value="nextjs">Next.js</option>
+      </select>
+
+      <button type="submit">포스트 작성</button>
+    </form>
+  );
+}
+```
+
+## useActionState로 에러 처리
+
+```typescript
+// actions/post.ts
+'use server';
+
+type ActionState = {
+  errors?: {
+    title?: string[];
+    content?: string[];
+  };
+  message?: string;
+} | null;
+
+export async function createPost(
+  prevState: ActionState,
+  formData: FormData
+): Promise<ActionState> {
+  const validated = CreatePostSchema.safeParse({
+    title: formData.get('title'),
+    content: formData.get('content'),
+  });
+
+  if (!validated.success) {
+    return { errors: validated.error.flatten().fieldErrors };
+  }
+
+  try {
+    await db.post.create({ data: validated.data });
+    revalidatePath('/posts');
+  } catch {
+    return { message: '데이터베이스 오류가 발생했습니다.' };
+  }
+
+  redirect('/posts');
+}
+```
+
+```tsx
+// 클라이언트 컴포넌트
+'use client';
+
+import { useActionState } from 'react';
+import { createPost } from '@/app/actions/post';
+
+export function CreatePostForm() {
+  const [state, formAction, isPending] = useActionState(createPost, null);
+
+  return (
+    <form action={formAction}>
+      <div>
+        <input name="title" />
+        {state?.errors?.title && (
+          <p className="text-red-500">{state.errors.title[0]}</p>
+        )}
+      </div>
+
+      <div>
+        <textarea name="content" />
+        {state?.errors?.content && (
+          <p className="text-red-500">{state.errors.content[0]}</p>
+        )}
+      </div>
+
+      {state?.message && (
+        <p className="text-red-500">{state.message}</p>
+      )}
+
+      <button type="submit" disabled={isPending}>
+        {isPending ? '저장 중...' : '포스트 작성'}
+      </button>
+    </form>
+  );
+}
+```
+
+## useOptimistic으로 낙관적 업데이트
+
+```tsx
+'use client';
+
+import { useOptimistic, useTransition } from 'react';
+import { toggleLike } from '@/app/actions/like';
+
+interface Post {
+  id: string;
+  title: string;
+  likeCount: number;
+  isLiked: boolean;
+}
+
+function PostCard({ post }: { post: Post }) {
+  const [optimisticPost, addOptimisticLike] = useOptimistic(
+    post,
+    (state, liked: boolean) => ({
+      ...state,
+      isLiked: liked,
+      likeCount: liked ? state.likeCount + 1 : state.likeCount - 1,
+    })
+  );
+
+  const [, startTransition] = useTransition();
+
+  const handleLike = () => {
+    const newLiked = !optimisticPost.isLiked;
+    
+    startTransition(async () => {
+      addOptimisticLike(newLiked); // UI 즉시 업데이트
+      await toggleLike(post.id, newLiked); // 서버 호출
+    });
+  };
+
+  return (
+    <article>
+      <h3>{post.title}</h3>
+      <button
+        onClick={handleLike}
+        className={optimisticPost.isLiked ? 'liked' : ''}
+      >
+        ❤️ {optimisticPost.likeCount}
+      </button>
+    </article>
+  );
+}
+```
+
+## 파일 업로드
+
+```typescript
+// actions/upload.ts
+'use server';
+
+export async function uploadImage(formData: FormData) {
+  const file = formData.get('file') as File;
+  
+  if (!file || file.size === 0) {
+    return { error: '파일을 선택하세요' };
+  }
+
+  if (file.size > 5 * 1024 * 1024) {
+    return { error: '5MB 이하 파일만 업로드 가능합니다' };
+  }
+
+  const bytes = await file.arrayBuffer();
+  const buffer = Buffer.from(bytes);
+  
+  // 스토리지 업로드 (S3, Cloudflare R2 등)
+  const url = await uploadToStorage(buffer, file.name, file.type);
+  
+  return { url };
+}
+```
+
+```tsx
+'use client';
+
+function ImageUpload() {
+  async function handleSubmit(formData: FormData) {
+    const result = await uploadImage(formData);
+    if (result.error) {
+      alert(result.error);
+    } else {
+      console.log('업로드 완료:', result.url);
+    }
+  }
+
+  return (
+    <form action={handleSubmit}>
+      <input type="file" name="file" accept="image/*" />
+      <button type="submit">업로드</button>
+    </form>
+  );
+}
+```
+
+Server Actions는 Next.js에서 폼 처리와 데이터 변경의 패러다임을 바꿨습니다. 별도의 API 라우트 없이 서버 로직을 직접 호출하고, 낙관적 업데이트로 빠른 사용자 경험을 제공할 수 있습니다.
