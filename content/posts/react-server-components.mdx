@@ -1,0 +1,199 @@
+---
+title: "React Server Components 심층 분석: 언제 어떻게 써야 하는가"
+date: "2025-12-18"
+category: "react"
+excerpt: "React Server Components(RSC)의 작동 원리와 실전 활용 패턴을 알아봅니다. 클라이언트 컴포넌트와 서버 컴포넌트를 적절히 구분하는 방법과 성능 최적화 전략을 설명합니다."
+tags: ["React", "Server Components", "RSC", "Next.js", "Performance"]
+readingTime: 13
+---
+
+## React Server Components란?
+
+RSC는 서버에서만 렌더링되는 컴포넌트입니다. 클라이언트에 JavaScript 번들이 전송되지 않아 초기 로드 성능을 크게 향상시킵니다.
+
+## 서버 컴포넌트 vs 클라이언트 컴포넌트
+
+| 특성 | 서버 컴포넌트 | 클라이언트 컴포넌트 |
+|------|-------------|-----------------|
+| 렌더링 위치 | 서버 | 클라이언트 (+ SSR) |
+| 번들에 포함 | ❌ | ✅ |
+| useState/useEffect | ❌ | ✅ |
+| DB 직접 접근 | ✅ | ❌ |
+| 이벤트 핸들러 | ❌ | ✅ |
+| 브라우저 API | ❌ | ✅ |
+
+## 서버 컴포넌트 실전 패턴
+
+### 데이터 패칭을 컴포넌트에서 직접
+
+```tsx
+// Server Component - DB 직접 접근, API 키 안전
+async function BlogPosts() {
+  // 이 코드는 서버에서만 실행됨
+  const posts = await db.post.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+  });
+
+  return (
+    <ul>
+      {posts.map((post) => (
+        <li key={post.id}>
+          <PostCard post={post} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+### 컴포넌트 트리 구성 전략
+
+```tsx
+// page.tsx - 서버 컴포넌트
+export default async function ProductPage({ params }: { params: { id: string } }) {
+  const product = await getProduct(params.id);
+  const reviews = await getReviews(params.id);
+
+  return (
+    <div>
+      {/* 서버 컴포넌트: 정적 UI */}
+      <ProductHeader product={product} />
+
+      {/* 클라이언트 컴포넌트: 인터랙션 필요 */}
+      <AddToCartButton productId={product.id} />
+
+      {/* 서버 컴포넌트: 데이터 표시 */}
+      <ReviewList reviews={reviews} />
+
+      {/* 클라이언트 컴포넌트: 폼 제출 */}
+      <ReviewForm productId={product.id} />
+    </div>
+  );
+}
+```
+
+## 클라이언트 컴포넌트로 전환하는 시점
+
+```tsx
+'use client'; // 이 지시문이 있으면 클라이언트 컴포넌트
+
+// useState, useEffect 사용 → 클라이언트 필요
+function SearchBar() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<Post[]>([]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      searchPosts(query).then(setResults);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  return (
+    <div>
+      <input value={query} onChange={(e) => setQuery(e.target.value)} />
+      {results.map((post) => <PostCard key={post.id} post={post} />)}
+    </div>
+  );
+}
+```
+
+## 서버/클라이언트 경계 최소화
+
+"Push Down Client Components" 패턴:
+
+```tsx
+// ❌ 전체 페이지를 클라이언트로 만드는 방법
+'use client';
+
+async function ExpensivePage() {
+  const data = await fetchData(); // 서버 데이터 패칭도 클라이언트에서
+  const [count, setCount] = useState(0);
+  return (
+    <div>
+      <DataDisplay data={data} />
+      <button onClick={() => setCount(c => c + 1)}>{count}</button>
+    </div>
+  );
+}
+
+// ✅ 클라이언트 로직만 분리
+// page.tsx - Server Component
+async function Page() {
+  const data = await fetchData(); // 서버에서 실행
+  return (
+    <div>
+      <DataDisplay data={data} />    {/* 서버 컴포넌트 */}
+      <Counter />                     {/* 클라이언트 컴포넌트 */}
+    </div>
+  );
+}
+
+// Counter.tsx - Client Component
+'use client';
+function Counter() {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount(c => c + 1)}>{count}</button>;
+}
+```
+
+## 서버 컴포넌트에 클라이언트 컴포넌트 전달
+
+서버 컴포넌트는 클라이언트 컴포넌트에 children으로 전달될 수 있습니다.
+
+```tsx
+// ServerComponent.tsx (서버)
+async function ServerComponent() {
+  const data = await fetchData();
+  return <div>{data.title}</div>;
+}
+
+// ClientWrapper.tsx (클라이언트)
+'use client';
+function ClientWrapper({ children }: { children: React.ReactNode }) {
+  const [isOpen, setIsOpen] = useState(false);
+  return (
+    <div>
+      <button onClick={() => setIsOpen(!isOpen)}>토글</button>
+      {isOpen && children}  {/* children은 서버에서 렌더링됨 */}
+    </div>
+  );
+}
+
+// page.tsx (서버)
+export default function Page() {
+  return (
+    <ClientWrapper>
+      <ServerComponent />  {/* 서버 컴포넌트를 클라이언트 children으로 */}
+    </ClientWrapper>
+  );
+}
+```
+
+## 스트리밍과 Suspense
+
+```tsx
+import { Suspense } from 'react';
+
+export default function Page() {
+  return (
+    <div>
+      {/* 즉시 렌더링 */}
+      <Header />
+
+      {/* 데이터 로딩 중 스켈레톤 표시 */}
+      <Suspense fallback={<PostListSkeleton />}>
+        <PostList />  {/* 비동기 서버 컴포넌트 */}
+      </Suspense>
+
+      {/* 독립적으로 스트리밍 */}
+      <Suspense fallback={<RecommendationsSkeleton />}>
+        <Recommendations />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+RSC는 클라이언트 번들을 줄이고 서버 리소스를 직접 활용하는 강력한 패러다임입니다. 서버/클라이언트 경계를 의식적으로 관리하면 성능과 개발 경험 모두를 최적화할 수 있습니다.
