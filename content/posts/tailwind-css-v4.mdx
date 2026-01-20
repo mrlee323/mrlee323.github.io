@@ -1,0 +1,207 @@
+---
+title: "Tailwind CSS v4 완전 새로운 시작: CSS-first 설정 방식"
+date: "2026-01-20"
+category: "cssdesign"
+excerpt: "Tailwind CSS v4의 핵심 변화를 알아봅니다. CSS-first 설정, 새로운 @theme, 성능 개선, 그리고 기존 프로젝트 마이그레이션 가이드까지 실전 예제와 함께 설명합니다."
+tags: ["CSS", "Tailwind CSS", "v4", "CSS-first", "Migration"]
+readingTime: 10
+---
+
+## Tailwind CSS v4의 혁신
+
+Tailwind CSS v4는 완전히 새로 작성된 버전입니다. 가장 큰 변화는 **JavaScript 설정 파일이 없어졌다**는 것입니다. 이제 CSS 파일에서 직접 Tailwind를 설정합니다.
+
+## 주요 변경 사항
+
+### 1. tailwind.config.js → CSS 파일로
+
+```javascript
+// ❌ v3: tailwind.config.js
+module.exports = {
+  theme: {
+    extend: {
+      colors: {
+        brand: '#0066cc',
+      },
+      fontFamily: {
+        sans: ['Pretendard', 'sans-serif'],
+      },
+    },
+  },
+};
+```
+
+```css
+/* ✅ v4: globals.css */
+@import "tailwindcss";
+
+@theme {
+  --color-brand: #0066cc;
+  --font-sans: 'Pretendard', sans-serif;
+}
+```
+
+### 2. 더 빠른 빌드
+
+v4는 Rust로 작성된 새 엔진 Oxide를 사용합니다. 증분 빌드가 v3 대비 최대 100배 빠릅니다.
+
+```bash
+# v3: 전체 스캔 필요
+# v4: 변경된 파일만 처리
+
+# 실제 빌드 시간 (대규모 프로젝트)
+# v3: ~3초
+# v4: ~30ms
+```
+
+### 3. CSS 변수 기반 테마
+
+```css
+@theme {
+  /* 색상 - Tailwind가 자동으로 유틸리티 생성 */
+  --color-primary: oklch(60% 0.2 220);
+  --color-primary-50: oklch(97% 0.02 220);
+  --color-primary-500: oklch(60% 0.2 220);
+  --color-primary-900: oklch(25% 0.1 220);
+
+  /* 간격 */
+  --spacing-18: 4.5rem;
+  --spacing-88: 22rem;
+
+  /* 폰트 */
+  --font-display: 'Playfair Display', serif;
+
+  /* 반경 */
+  --radius-4xl: 2rem;
+}
+```
+
+자동으로 `bg-primary`, `text-primary-500`, `mt-18` 같은 유틸리티 클래스가 생성됩니다.
+
+## v4 설치
+
+```bash
+npm install tailwindcss@next @tailwindcss/vite
+# 또는 PostCSS 사용
+npm install tailwindcss@next @tailwindcss/postcss
+```
+
+```javascript
+// vite.config.ts
+import tailwindcss from '@tailwindcss/vite';
+
+export default {
+  plugins: [tailwindcss()],
+};
+```
+
+```css
+/* globals.css */
+@import "tailwindcss";
+```
+
+끝! `tailwind.config.js`, `postcss.config.js` 불필요합니다.
+
+## 새로운 기능들
+
+### CSS-first 커스텀 유틸리티
+
+```css
+@utility btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  transition: all 150ms ease;
+}
+
+@utility btn-primary {
+  background: var(--color-primary);
+  color: white;
+  
+  &:hover {
+    background: var(--color-primary-600);
+  }
+}
+```
+
+사용:
+```html
+<button class="btn btn-primary">클릭</button>
+```
+
+### 동적 유틸리티
+
+v4에서는 임의의 값을 더 직관적으로 사용합니다.
+
+```html
+<!-- v3 -->
+<div class="w-[350px] mt-[72px]">
+
+<!-- v4: 동일하게 지원, 더 스마트한 타입 추론 -->
+<div class="w-[350px] mt-[72px]">
+```
+
+### Variant 개선
+
+```html
+<!-- 새로운 variant 패턴 -->
+<div class="group">
+  <p class="group-hover/card:text-blue-500">호버 시 파란색</p>
+</div>
+
+<!-- starting: variant (CSS @starting-style) -->
+<dialog class="starting:opacity-0 opacity-100 transition-opacity">
+  다이얼로그
+</dialog>
+```
+
+## v3에서 v4 마이그레이션
+
+```bash
+# 자동 마이그레이션 도구
+npx @tailwindcss/upgrade
+```
+
+### 주요 변경 사항 수동 처리
+
+```css
+/* v3 → v4 */
+
+/* ❌ v3: JavaScript 설정 */
+/* tailwind.config.js의 theme.extend.colors 삭제 */
+
+/* ✅ v4: CSS로 */
+@theme {
+  --color-brand: #0066cc;
+}
+```
+
+```html
+<!-- ❌ v3: 일부 deprecated 유틸리티 -->
+<div class="overflow-ellipsis">
+
+<!-- ✅ v4: 새 이름 -->
+<div class="text-ellipsis">
+```
+
+### 호환 모드
+
+v4로 완전 전환이 어려우면 호환 모드 사용:
+
+```css
+@import "tailwindcss/preflight" layer(base);
+@import "tailwindcss/utilities" layer(utilities);
+```
+
+## 실전 마이그레이션 경험
+
+대규모 Next.js 프로젝트를 v3에서 v4로 마이그레이션할 때의 팁:
+
+1. `npx @tailwindcss/upgrade` 먼저 실행
+2. 커스텀 `theme.extend.*` 값들을 `@theme {}` 블록으로 이동
+3. 플러그인들을 CSS `@utility`로 변환
+4. 빌드 에러와 런타임 스타일 차이 확인
+
+Tailwind CSS v4는 성능과 개발 경험 모두를 크게 향상시켰습니다. 새 프로젝트라면 v4를 바로 사용하고, 기존 프로젝트는 자동 마이그레이션 도구를 활용하세요.
