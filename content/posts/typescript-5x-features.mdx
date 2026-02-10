@@ -1,0 +1,192 @@
+---
+title: "TypeScript 5.x 핵심 기능 총정리: 데코레이터부터 const 타입까지"
+date: "2026-02-10"
+category: "typescript"
+excerpt: "TypeScript 5.0~5.7의 핵심 기능들을 정리합니다. 새로운 데코레이터 표준, const 타입 파라미터, satisfies 연산자, 향상된 타입 추론 등 실무에 바로 적용 가능한 기능들을 알아봅니다."
+tags: ["TypeScript", "TypeScript 5", "Decorators", "const", "satisfies"]
+readingTime: 12
+---
+
+## TypeScript 5.x 시리즈 개요
+
+TypeScript 5.0부터 5.7까지 추가된 핵심 기능들을 살펴봅니다. 특히 데코레이터 표준화, `const` 타입 파라미터, `satisfies` 연산자는 실무에서 자주 사용됩니다.
+
+## 데코레이터 (TypeScript 5.0)
+
+TypeScript 5.0에서 TC39 Stage 3 데코레이터 제안을 구현했습니다. 이전의 `experimentalDecorators`와는 다른 새 표준입니다.
+
+```typescript
+// 클래스 데코레이터
+function sealed(target: typeof Base) {
+  Object.seal(target);
+  Object.seal(target.prototype);
+}
+
+// 메서드 데코레이터
+function log(
+  target: unknown,
+  context: ClassMethodDecoratorContext
+) {
+  const methodName = String(context.name);
+  
+  return function(this: unknown, ...args: unknown[]) {
+    console.log(`[${methodName}] called with`, args);
+    const result = (target as Function).apply(this, args);
+    console.log(`[${methodName}] returned`, result);
+    return result;
+  };
+}
+
+@sealed
+class UserService {
+  @log
+  async createUser(data: CreateUserDto) {
+    return await db.user.create({ data });
+  }
+}
+```
+
+### 접근자 데코레이터
+
+```typescript
+function clamp(min: number, max: number) {
+  return function(target: unknown, context: ClassAccessorDecoratorContext) {
+    return {
+      get(this: unknown) {
+        return (target as any).get.call(this);
+      },
+      set(this: unknown, value: number) {
+        (target as any).set.call(this, Math.min(Math.max(value, min), max));
+      },
+    };
+  };
+}
+
+class Temperature {
+  @clamp(-273.15, Infinity)
+  accessor celsius = 20;
+}
+
+const t = new Temperature();
+t.celsius = -300; // -273.15로 자동 클램핑
+```
+
+## const 타입 파라미터 (TypeScript 5.0)
+
+```typescript
+// ❌ 이전: 타입이 너무 넓어짐
+function createRoute<T extends readonly string[]>(routes: T) {
+  return routes;
+}
+
+const routes = createRoute(['/home', '/about', '/contact']);
+// routes: string[] - 너무 넓음
+
+// ✅ const 파라미터로 리터럴 타입 유지
+function createRoute<const T extends readonly string[]>(routes: T) {
+  return routes;
+}
+
+const routes = createRoute(['/home', '/about', '/contact']);
+// routes: readonly ['/home', '/about', '/contact'] - 정확!
+
+// 실전 활용: 경로 타입 안전성
+type Route = typeof routes[number];
+// '/home' | '/about' | '/contact'
+```
+
+## satisfies 연산자 (TypeScript 4.9)
+
+`satisfies`는 타입 체크를 하면서도 더 좁은 타입을 유지합니다.
+
+```typescript
+type Colors = 'red' | 'green' | 'blue';
+type RGB = [number, number, number];
+
+// ❌ as로 단언
+const palette = {
+  red: [255, 0, 0],
+  green: '#00ff00',
+  blue: [0, 0, 255],
+} as Record<Colors, RGB | string>;
+// palette.green은 RGB | string → 메서드 자동완성 불편
+
+// ✅ satisfies 사용
+const palette = {
+  red: [255, 0, 0],
+  green: '#00ff00',
+  blue: [0, 0, 255],
+} satisfies Record<Colors, RGB | string>;
+
+palette.red[0]; // number ✅ (RGB로 추론됨)
+palette.green.toUpperCase(); // ✅ (string으로 추론됨)
+```
+
+## 향상된 타입 추론 (5.1~5.4)
+
+### JSX에서 향상된 getter/setter 타입
+
+```typescript
+// TypeScript 5.1: getter/setter 다른 타입 허용
+class Form {
+  private _value = '';
+
+  get value(): string {
+    return this._value;
+  }
+
+  // ✅ setter가 getter와 다른 타입 허용
+  set value(v: string | number | boolean) {
+    this._value = String(v);
+  }
+}
+
+const form = new Form();
+form.value = 42; // ✅
+form.value = true; // ✅
+const v: string = form.value; // ✅
+```
+
+### Infer 키워드 개선 (5.4)
+
+```typescript
+// 중첩 함수 타입에서 정확한 추론
+type DeepReturnType<T> = T extends () => infer R
+  ? R extends () => infer S
+    ? S
+    : R
+  : never;
+
+const fn = () => () => 'hello';
+type Result = DeepReturnType<typeof fn>; // string
+```
+
+## 타입 가드 개선 (5.5)
+
+```typescript
+// ❌ 이전: 타입 가드 함수 필요
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+const arr: (string | number)[] = ['a', 1, 'b', 2];
+const strings = arr.filter(isString); // string[]
+
+// ✅ TypeScript 5.5: 인라인 타입 추론 개선
+const strings = arr.filter((x): x is string => typeof x === 'string');
+// strings: string[] - 올바른 타입 추론
+```
+
+## TypeScript 5.7: 경로 검사 강화
+
+```typescript
+// 존재하지 않는 경로 사용 시 컴파일 오류
+// tsconfig.json
+{
+  "compilerOptions": {
+    "noUncheckedSideEffectImports": true // 5.6+
+  }
+}
+```
+
+TypeScript 5.x 시리즈는 개발자 경험과 타입 시스템의 표현력을 크게 향상시켰습니다. 특히 `satisfies`와 `const` 타입 파라미터는 기존 코드에 바로 적용할 수 있는 유용한 기능입니다.
