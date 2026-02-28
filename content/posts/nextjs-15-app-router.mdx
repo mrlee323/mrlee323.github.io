@@ -1,0 +1,219 @@
+---
+title: "Next.js 15 App Router 완벽 이해: 캐싱 전략과 데이터 패칭"
+date: "2026-02-28"
+category: "nextjs"
+excerpt: "Next.js 15의 캐싱 시스템 변화와 데이터 패칭 전략을 완벽히 이해합니다. 기본 캐시 비활성화, Request Memoization, unstable_cache, 그리고 최적의 캐싱 전략을 알아봅니다."
+tags: ["Next.js", "App Router", "Caching", "Data Fetching", "Performance"]
+readingTime: 15
+---
+
+## Next.js 15의 캐싱 대변혁
+
+Next.js 15에서 가장 큰 변화는 **기본 캐시가 꺼졌다**는 것입니다. v14까지는 fetch 요청이 기본으로 캐시되었지만, v15부터는 기본값이 `no-store`입니다.
+
+## 변경 전후 비교
+
+```typescript
+// ❌ Next.js 14: 기본값 force-cache (자동 캐싱)
+const response = await fetch('/api/posts');
+// = fetch('/api/posts', { cache: 'force-cache' })
+
+// ✅ Next.js 15: 기본값 no-store (캐싱 없음)
+const response = await fetch('/api/posts');
+// = fetch('/api/posts', { cache: 'no-store' })
+
+// 명시적으로 캐시하려면
+const response = await fetch('/api/posts', {
+  next: { revalidate: 3600 },
+});
+```
+
+## 캐싱 레이어 이해
+
+### 1. Request Memoization
+
+같은 URL로 같은 요청을 단일 렌더링 트리에서 여러 번 호출해도 한 번만 실행됩니다.
+
+```typescript
+// 이 함수가 여러 컴포넌트에서 호출되어도 한 번만 DB 쿼리 실행
+import { cache } from 'react';
+
+export const getUser = cache(async (id: string) => {
+  console.log('DB query executed'); // 한 번만 출력
+  return db.user.findUnique({ where: { id } });
+});
+
+// 컴포넌트 A
+const user = await getUser('123'); // DB 쿼리 실행
+
+// 컴포넌트 B (같은 요청)
+const user = await getUser('123'); // 캐시에서 반환
+```
+
+### 2. Data Cache (fetch 기반)
+
+```typescript
+// 1시간 캐시
+const posts = await fetch('/api/posts', {
+  next: { revalidate: 3600 }
+});
+
+// 태그 기반 캐시
+const user = await fetch(`/api/users/${id}`, {
+  next: { tags: [`user-${id}`] }
+});
+
+// 영구 캐시 (재배포 전까지)
+const config = await fetch('/api/config', {
+  cache: 'force-cache'
+});
+
+// 캐시 안 함
+const liveData = await fetch('/api/live', {
+  cache: 'no-store'
+});
+```
+
+### 3. unstable_cache (ORM/DB 캐싱)
+
+fetch 대신 Prisma, Drizzle 등 ORM을 쓸 때 캐싱 방법:
+
+```typescript
+import { unstable_cache } from 'next/cache';
+
+export const getCachedPosts = unstable_cache(
+  async () => {
+    return db.post.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    });
+  },
+  ['posts-list'],       // 캐시 키
+  {
+    revalidate: 3600,   // 1시간마다 재검증
+    tags: ['posts'],    // 무효화 태그
+  }
+);
+```
+
+### 4. Full Route Cache
+
+페이지 전체를 정적으로 캐싱합니다.
+
+```typescript
+// 정적 페이지 (빌드 시 생성)
+export const dynamic = 'force-static';
+
+// 동적 페이지 (요청마다 렌더링)
+export const dynamic = 'force-dynamic';
+
+// 기본값 (Next.js가 자동 결정)
+// 동적 함수(cookies, headers) 사용 → 동적
+// 없으면 → 정적
+```
+
+## 데이터 패칭 패턴
+
+### 병렬 데이터 패칭
+
+```typescript
+// ❌ 순차적 (느림)
+const user = await getUser(id);
+const posts = await getPosts(userId);
+const comments = await getComments(userId);
+
+// ✅ 병렬 (빠름)
+const [user, posts, comments] = await Promise.all([
+  getUser(id),
+  getPosts(userId),
+  getComments(userId),
+]);
+```
+
+### 스트리밍으로 순차적 데이터 표시
+
+```tsx
+import { Suspense } from 'react';
+
+export default function Page() {
+  return (
+    <div>
+      {/* 즉시 표시 */}
+      <UserProfile />
+
+      {/* 독립적으로 스트리밍 */}
+      <Suspense fallback={<PostListSkeleton />}>
+        <PostList />
+      </Suspense>
+
+      <Suspense fallback={<RecommendationSkeleton />}>
+        <Recommendations />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+## Partial Prerendering (PPR)
+
+Next.js 15의 실험적 기능으로, 정적/동적 콘텐츠를 같은 페이지에서 최적으로 처리합니다.
+
+```typescript
+// next.config.ts
+export default {
+  experimental: {
+    ppr: true,
+  },
+};
+```
+
+```tsx
+import { Suspense } from 'react';
+import { unstable_noStore as noStore } from 'next/cache';
+
+// 정적 부분
+function StaticHeader() {
+  return <header>로고와 네비게이션</header>;
+}
+
+// 동적 부분
+async function DynamicCart() {
+  noStore(); // 이 컴포넌트는 항상 동적
+  const cart = await getCart();
+  return <div>{cart.items.length}개 아이템</div>;
+}
+
+// PPR: 정적 쉘을 즉시 서빙, 동적 부분은 스트리밍
+export default function Page() {
+  return (
+    <>
+      <StaticHeader /> {/* 즉시 서빙 */}
+      <Suspense fallback={<CartSkeleton />}>
+        <DynamicCart />  {/* 스트리밍 */}
+      </Suspense>
+    </>
+  );
+}
+```
+
+## 캐시 무효화
+
+```typescript
+// 태그 기반 무효화 (Server Action에서)
+'use server';
+import { revalidateTag, revalidatePath } from 'next/cache';
+
+export async function updatePost(id: string, data: PostData) {
+  await db.post.update({ where: { id }, data });
+
+  // 특정 태그의 캐시 무효화
+  revalidateTag(`post-${id}`);
+  revalidateTag('posts');
+
+  // 특정 경로 재생성
+  revalidatePath('/posts');
+  revalidatePath(`/posts/${id}`);
+}
+```
+
+Next.js 15의 캐싱 시스템은 더 명시적이고 예측 가능해졌습니다. 기본값을 이해하고 명시적으로 캐싱 전략을 선택하면 성능과 데이터 신선도를 모두 잡을 수 있습니다.
