@@ -1,0 +1,285 @@
+---
+title: "프론트엔드 개발자를 위한 Vercel AI SDK 실전 가이드"
+date: "2026-03-01"
+category: "ai"
+excerpt: "Vercel AI SDK를 사용해 Next.js 앱에 AI 기능을 빠르게 추가하는 방법을 알아봅니다. useChat, useCompletion 훅부터 스트리밍, 도구 호출까지 실전 예제로 배웁니다."
+tags: ["AI", "Vercel AI SDK", "Next.js", "Streaming", "React"]
+readingTime: 14
+---
+
+## Vercel AI SDK란?
+
+Vercel AI SDK는 React/Next.js 앱에서 AI 기능을 구축하기 위한 오픈소스 라이브러리입니다. OpenAI, Anthropic, Google 등 다양한 AI 프로바이더를 통일된 API로 사용할 수 있게 해줍니다.
+
+```bash
+npm install ai @ai-sdk/openai
+# 또는 Anthropic 사용 시
+npm install ai @ai-sdk/anthropic
+```
+
+## 기본 설정
+
+```typescript
+// app/api/chat/route.ts
+import { openai } from '@ai-sdk/openai';
+import { streamText } from 'ai';
+
+export async function POST(request: Request) {
+  const { messages } = await request.json();
+
+  const result = await streamText({
+    model: openai('gpt-4o'),
+    messages,
+  });
+
+  return result.toDataStreamResponse();
+}
+```
+
+클라이언트 사이드:
+
+```tsx
+// app/chat/page.tsx
+'use client';
+
+import { useChat } from 'ai/react';
+
+export default function ChatPage() {
+  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat();
+
+  return (
+    <div>
+      {messages.map((m) => (
+        <div key={m.id}>
+          <strong>{m.role === 'user' ? '나' : 'AI'}:</strong>
+          <p>{m.content}</p>
+        </div>
+      ))}
+
+      <form onSubmit={handleSubmit}>
+        <input value={input} onChange={handleInputChange} />
+        <button type="submit" disabled={isLoading}>전송</button>
+      </form>
+    </div>
+  );
+}
+```
+
+`useChat` 훅 하나로 스트리밍, 메시지 관리, 로딩 상태까지 자동으로 처리됩니다.
+
+## useCompletion으로 텍스트 완성
+
+채팅이 아닌 단일 텍스트 완성이 필요할 때는 `useCompletion`을 사용합니다.
+
+```tsx
+// 블로그 포스트 초안 생성기
+'use client';
+
+import { useCompletion } from 'ai/react';
+
+export function PostDraftGenerator() {
+  const { completion, input, handleInputChange, handleSubmit, isLoading } =
+    useCompletion({
+      api: '/api/generate-post',
+    });
+
+  return (
+    <div>
+      <form onSubmit={handleSubmit}>
+        <input
+          value={input}
+          onChange={handleInputChange}
+          placeholder="포스트 주제를 입력하세요"
+        />
+        <button type="submit" disabled={isLoading}>
+          초안 생성
+        </button>
+      </form>
+
+      {completion && (
+        <div className="mt-4 prose">
+          <pre className="whitespace-pre-wrap">{completion}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+```
+
+## 도구(Tool) 호출
+
+AI가 외부 함수를 호출할 수 있게 해주는 강력한 기능입니다.
+
+```typescript
+// app/api/assistant/route.ts
+import { openai } from '@ai-sdk/openai';
+import { streamText, tool } from 'ai';
+import { z } from 'zod';
+
+export async function POST(request: Request) {
+  const { messages } = await request.json();
+
+  const result = await streamText({
+    model: openai('gpt-4o'),
+    messages,
+    tools: {
+      // 날씨 조회 도구
+      getWeather: tool({
+        description: '특정 도시의 현재 날씨를 조회합니다',
+        parameters: z.object({
+          city: z.string().describe('날씨를 조회할 도시 이름'),
+        }),
+        execute: async ({ city }) => {
+          // 실제 날씨 API 호출
+          const weather = await fetchWeatherApi(city);
+          return { city, temperature: weather.temp, condition: weather.condition };
+        },
+      }),
+
+      // GitHub 레포지토리 검색 도구
+      searchRepos: tool({
+        description: 'GitHub 레포지토리를 검색합니다',
+        parameters: z.object({
+          query: z.string(),
+          language: z.string().optional(),
+        }),
+        execute: async ({ query, language }) => {
+          const repos = await searchGitHubRepos(query, language);
+          return repos.slice(0, 5);
+        },
+      }),
+    },
+  });
+
+  return result.toDataStreamResponse();
+}
+```
+
+클라이언트에서 도구 호출 결과를 렌더링:
+
+```tsx
+'use client';
+
+import { useChat } from 'ai/react';
+
+export function AssistantChat() {
+  const { messages, input, handleInputChange, handleSubmit } = useChat({
+    api: '/api/assistant',
+  });
+
+  return (
+    <div>
+      {messages.map((m) => (
+        <div key={m.id}>
+          {m.role === 'assistant' && m.toolInvocations?.map((tool) => {
+            if (tool.toolName === 'getWeather' && tool.state === 'result') {
+              return (
+                <div key={tool.toolCallId} className="weather-card">
+                  🌡️ {tool.result.city}: {tool.result.temperature}°C
+                </div>
+              );
+            }
+          })}
+          <p>{m.content}</p>
+        </div>
+      ))}
+
+      <form onSubmit={handleSubmit}>
+        <input value={input} onChange={handleInputChange} />
+        <button type="submit">전송</button>
+      </form>
+    </div>
+  );
+}
+```
+
+## 멀티 모달: 이미지 분석
+
+```typescript
+// app/api/analyze-image/route.ts
+import { anthropic } from '@ai-sdk/anthropic';
+import { streamText } from 'ai';
+
+export async function POST(request: Request) {
+  const formData = await request.formData();
+  const image = formData.get('image') as File;
+  const question = formData.get('question') as string;
+
+  const bytes = await image.arrayBuffer();
+  const base64 = Buffer.from(bytes).toString('base64');
+
+  const result = await streamText({
+    model: anthropic('claude-opus-4-7'),
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            image: base64,
+            mimeType: image.type as 'image/jpeg' | 'image/png',
+          },
+          {
+            type: 'text',
+            text: question || '이 이미지에 대해 설명해주세요',
+          },
+        ],
+      },
+    ],
+  });
+
+  return result.toDataStreamResponse();
+}
+```
+
+## 에러 처리와 재시도
+
+```tsx
+'use client';
+
+import { useChat } from 'ai/react';
+import { toast } from 'sonner';
+
+export function RobustChat() {
+  const { messages, input, handleInputChange, handleSubmit, error, reload } =
+    useChat({
+      onError: (error) => {
+        toast.error(`AI 오류: ${error.message}`);
+      },
+    });
+
+  return (
+    <div>
+      {/* 메시지 렌더링 */}
+      
+      {error && (
+        <div className="error-banner">
+          <p>오류가 발생했습니다</p>
+          <button onClick={reload}>다시 시도</button>
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit}>
+        <input value={input} onChange={handleInputChange} />
+        <button type="submit">전송</button>
+      </form>
+    </div>
+  );
+}
+```
+
+## 프로바이더 전환
+
+Vercel AI SDK의 가장 큰 장점은 프로바이더를 쉽게 바꿀 수 있다는 것입니다.
+
+```typescript
+// OpenAI → Anthropic으로 한 줄 변경
+import { anthropic } from '@ai-sdk/anthropic';
+
+const result = await streamText({
+  model: anthropic('claude-opus-4-7'), // 이 줄만 바꾸면 됨
+  messages,
+});
+```
+
+Vercel AI SDK는 복잡한 스트리밍 로직, 상태 관리, 에러 처리를 추상화해서 AI 기능 개발에 집중할 수 있게 해줍니다. Next.js와의 궁합이 특히 좋아 프론트엔드 개발자에게 최적의 선택입니다.
