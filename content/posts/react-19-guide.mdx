@@ -1,0 +1,250 @@
+---
+title: "React 19 완전 가이드: Concurrent Features와 새로운 훅"
+date: "2026-03-15"
+category: "react"
+excerpt: "React 19의 모든 새로운 기능을 완전히 정리합니다. use() 훅, useOptimistic, useFormStatus, Actions, Server Components 개선, 그리고 자동 메모이제이션까지 실전 예제로 알아봅니다."
+tags: ["React", "React 19", "Hooks", "Actions", "use()"]
+readingTime: 15
+---
+
+## React 19: 무엇이 달라졌나?
+
+React 19는 2024년 말 출시되었으며, 프론트엔드 개발의 패러다임을 또 한 번 바꿨습니다. 핵심 변화는 **Actions**, **새로운 훅들**, **React Compiler 안정화**입니다.
+
+## use() 훅
+
+`use()`는 Promise와 Context를 렌더링 중에 읽는 새로운 방법입니다.
+
+### Promise 읽기
+
+```tsx
+import { use, Suspense } from 'react';
+
+// 서버에서 생성한 Promise를 클라이언트로 전달
+async function fetchUser(id: string): Promise<User> {
+  const response = await fetch(`/api/users/${id}`);
+  return response.json();
+}
+
+// 클라이언트 컴포넌트에서 use()로 Promise 읽기
+function UserCard({ userPromise }: { userPromise: Promise<User> }) {
+  const user = use(userPromise); // Promise가 resolve될 때까지 Suspense
+  return <div>{user.name}</div>;
+}
+
+// 사용
+export default async function Page({ params }: { params: { id: string } }) {
+  const userPromise = fetchUser(params.id); // await 하지 않음!
+
+  return (
+    <Suspense fallback={<Skeleton />}>
+      <UserCard userPromise={userPromise} />
+    </Suspense>
+  );
+}
+```
+
+### 조건부 Context 읽기
+
+```tsx
+// 기존 useContext는 조건부로 사용 불가
+// use()는 가능!
+function Component({ condition }: { condition: boolean }) {
+  if (condition) {
+    const theme = use(ThemeContext); // ✅ 조건부 OK
+    return <div style={{ color: theme.primary }}>컨텐츠</div>;
+  }
+  return <div>기본 컨텐츠</div>;
+}
+```
+
+## Actions
+
+React 19에서 비동기 상태 전환을 처리하는 새로운 패턴입니다.
+
+### useTransition으로 Action
+
+```tsx
+'use client';
+
+import { useTransition } from 'react';
+
+function UpdateProfileButton({ userId }: { userId: string }) {
+  const [isPending, startTransition] = useTransition();
+
+  const handleUpdate = () => {
+    startTransition(async () => {
+      // useTransition이 이제 async 함수를 지원!
+      await updateUserProfile(userId, newData);
+      // 완료 후 자동으로 isPending = false
+    });
+  };
+
+  return (
+    <button onClick={handleUpdate} disabled={isPending}>
+      {isPending ? '저장 중...' : '프로필 업데이트'}
+    </button>
+  );
+}
+```
+
+### useActionState
+
+```tsx
+'use client';
+
+import { useActionState } from 'react';
+
+async function submitForm(
+  prevState: FormState,
+  formData: FormData
+): Promise<FormState> {
+  const name = formData.get('name') as string;
+
+  if (!name) {
+    return { error: '이름을 입력하세요', success: false };
+  }
+
+  await updateName(name);
+  return { error: null, success: true };
+}
+
+function NameForm() {
+  const [state, formAction, isPending] = useActionState(submitForm, {
+    error: null,
+    success: false,
+  });
+
+  return (
+    <form action={formAction}>
+      <input name="name" />
+      {state.error && <p className="text-red-500">{state.error}</p>}
+      {state.success && <p className="text-green-500">저장되었습니다!</p>}
+      <button type="submit" disabled={isPending}>
+        {isPending ? '저장 중...' : '저장'}
+      </button>
+    </form>
+  );
+}
+```
+
+### useFormStatus
+
+폼 제출 상태를 자식 컴포넌트에서 읽습니다.
+
+```tsx
+import { useFormStatus } from 'react-dom';
+
+// 부모 <form>의 상태를 읽는 자식 컴포넌트
+function SubmitButton() {
+  const { pending } = useFormStatus();
+
+  return (
+    <button type="submit" disabled={pending}>
+      {pending ? '전송 중...' : '전송'}
+    </button>
+  );
+}
+
+function ContactForm() {
+  async function sendMessage(formData: FormData) {
+    'use server';
+    await sendEmail(formData.get('message') as string);
+  }
+
+  return (
+    <form action={sendMessage}>
+      <textarea name="message" />
+      <SubmitButton /> {/* pending 상태 자동 연결 */}
+    </form>
+  );
+}
+```
+
+## useOptimistic 개선
+
+```tsx
+'use client';
+
+import { useOptimistic } from 'react';
+
+interface Todo {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
+function TodoList({ initialTodos }: { initialTodos: Todo[] }) {
+  const [todos, addOptimisticTodo] = useOptimistic(
+    initialTodos,
+    (state: Todo[], newTodo: Todo) => [...state, newTodo]
+  );
+
+  async function addTodo(formData: FormData) {
+    const text = formData.get('text') as string;
+    const optimisticTodo: Todo = {
+      id: `temp-${Date.now()}`,
+      text,
+      completed: false,
+    };
+
+    addOptimisticTodo(optimisticTodo); // 즉시 UI 업데이트
+    await createTodo(text); // 서버 저장
+  }
+
+  return (
+    <div>
+      <form action={addTodo}>
+        <input name="text" placeholder="할 일 추가" />
+        <button type="submit">추가</button>
+      </form>
+
+      <ul>
+        {todos.map((todo) => (
+          <li key={todo.id} className={todo.id.startsWith('temp-') ? 'opacity-50' : ''}>
+            {todo.text}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+## Document Metadata
+
+React 19에서는 컴포넌트 내에서 직접 `<title>`, `<meta>`, `<link>` 태그를 렌더링할 수 있습니다.
+
+```tsx
+function PostPage({ post }: { post: Post }) {
+  return (
+    <article>
+      {/* React가 자동으로 <head>로 호이스팅 */}
+      <title>{post.title}</title>
+      <meta name="description" content={post.excerpt} />
+      <link rel="canonical" href={`https://example.com/posts/${post.slug}`} />
+
+      <h1>{post.title}</h1>
+      <p>{post.content}</p>
+    </article>
+  );
+}
+```
+
+## 에러 처리 개선
+
+```tsx
+// React 19: onCaughtError, onUncaughtError 추가
+const root = createRoot(document.getElementById('root')!, {
+  onCaughtError(error, errorInfo) {
+    // ErrorBoundary가 잡은 에러
+    logToSentry(error, errorInfo.componentStack);
+  },
+  onUncaughtError(error, errorInfo) {
+    // 잡히지 않은 에러
+    console.error('Uncaught error:', error);
+  },
+});
+```
+
+React 19는 비동기 작업, 폼 처리, 상태 관리를 훨씬 간결하게 만들었습니다. Actions 패턴을 중심으로 코드를 리팩토링하면 보일러플레이트를 크게 줄일 수 있습니다.
