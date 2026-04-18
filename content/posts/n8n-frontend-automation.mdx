@@ -1,0 +1,225 @@
+---
+title: "n8n으로 프론트엔드 자동화하기: 주간 컨텐츠 자동 생성까지"
+date: "2026-04-18"
+category: "ai"
+excerpt: "n8n이 무엇인지, 프론트엔드 개발자가 어떻게 활용할 수 있는지 정리합니다. 서비스 메인 페이지의 주간 컨텐츠를 자동으로 생성·배포하는 워크플로우 구축 사례까지 다룹니다."
+tags: ["n8n", "자동화", "AI", "워크플로우", "프론트엔드"]
+readingTime: 13
+---
+
+## n8n이란?
+
+**n8n**(노드-에이트-엔)은 오픈소스 워크플로우 자동화 도구입니다. Zapier나 Make(구 Integromat)와 비슷하지만 핵심적인 차이가 있습니다.
+
+- **셀프 호스팅 가능** — 데이터가 외부 서버를 거치지 않음
+- **코드 노드 지원** — JavaScript/Python으로 커스텀 로직 삽입
+- **400개 이상의 통합** — Slack, GitHub, Google Sheets, OpenAI, DB 등
+- **무료 플랜** — 클라우드 버전도 있고, 직접 서버에 올릴 수도 있음
+
+핵심 개념은 **노드(Node)** 와 **워크플로우(Workflow)** 입니다.
+
+```
+트리거 노드 → 처리 노드 → 처리 노드 → ... → 출력 노드
+   (언제)       (무엇을)     (어떻게)           (어디로)
+```
+
+예를 들어 "매주 월요일 오전 9시에 → OpenAI로 컨텐츠 생성 → DB에 저장 → Slack에 알림" 을 GUI에서 노드를 연결하는 것만으로 만들 수 있습니다.
+
+---
+
+## 프론트엔드 개발자에게 n8n이 유용한 이유
+
+보통 자동화는 백엔드나 DevOps 영역으로 여겨집니다. 하지만 프론트엔드 관점에서도 n8n은 강력한 도구입니다.
+
+### 1. API 없이 데이터 파이프라인 구성
+
+별도 백엔드 서버 없이 외부 서비스들을 연결할 수 있습니다.
+
+```
+Google Sheets (데이터 소스)
+  → n8n (가공·변환)
+    → REST API 엔드포인트 자동 생성
+      → 프론트엔드에서 fetch
+```
+
+n8n의 **Webhook 노드**를 쓰면 n8n 자체가 API 서버가 됩니다. 간단한 데이터 조회 API를 백엔드 없이 만들 수 있습니다.
+
+### 2. 반복 작업 제거
+
+- 배포 후 Slack 알림
+- PR 머지 시 Jira 티켓 자동 완료 처리
+- 디자인 토큰 변경 감지 → 팀 공지
+- 에러 모니터링 알림 → 이슈 자동 생성
+
+### 3. AI 기능을 워크플로우로 연결
+
+OpenAI, Claude API를 코드 없이 워크플로우에 붙일 수 있습니다. 프론트엔드에서 AI 기능을 붙이고 싶은데 백엔드 작업이 어려운 상황에서 n8n이 중간 레이어 역할을 합니다.
+
+---
+
+## 실전: 서비스 메인 주간 컨텐츠 자동화
+
+현재 작업하고 있는 케이스입니다. 서비스 메인 페이지에 **매주 새로운 컨텐츠**를 노출해야 하는데, 지금은 수동으로 데이터를 업데이트하고 배포하는 과정이 반복됩니다.
+
+이 흐름을 n8n으로 자동화하는 설계입니다.
+
+### 목표 워크플로우
+
+```
+매주 월요일 오전 9시 (Schedule 트리거)
+  → 지난주 인기 데이터 조회 (DB / Analytics API)
+  → OpenAI로 주간 컨텐츠 생성
+  → 결과를 DB에 저장
+  → CDN 캐시 무효화 (선택)
+  → Slack 알림
+```
+
+### Step 1: Schedule 트리거 설정
+
+n8n의 **Schedule Trigger** 노드에서 cron 표현식으로 실행 시점을 설정합니다.
+
+```
+0 9 * * 1   →  매주 월요일 오전 9시
+```
+
+### Step 2: 지난주 데이터 조회
+
+**HTTP Request 노드** 또는 **Postgres/MySQL 노드**로 지난 7일간 조회수, 클릭률이 높은 항목을 가져옵니다.
+
+```json
+// 조회 결과 예시 (n8n 노드 출력)
+{
+  "topItems": [
+    { "id": "hotel_123", "views": 4820, "title": "제주 오션뷰 호텔" },
+    { "id": "hotel_456", "views": 3910, "title": "부산 해운대 리조트" }
+  ],
+  "weekOf": "2026-04-14"
+}
+```
+
+### Step 3: OpenAI로 컨텐츠 생성
+
+**OpenAI 노드**에 이전 단계의 데이터를 프롬프트로 넘겨 컨텐츠를 생성합니다.
+
+```
+시스템 프롬프트:
+  여행 서비스의 메인 배너 카피라이터입니다.
+  이번 주 인기 여행지 데이터를 바탕으로
+  메인 페이지에 노출할 주간 추천 컨텐츠를 생성하세요.
+
+  출력 형식 (JSON):
+  {
+    "headline": "이번 주 여행 트렌드",
+    "subheadline": "...",
+    "items": [{ "id": "...", "label": "...", "badge": "..." }]
+  }
+
+유저 입력: {{ $json.topItems | toJSON }}
+```
+
+n8n의 **Code 노드**로 응답을 파싱하고 원하는 스키마로 가공합니다.
+
+```js
+// Code 노드 (JavaScript)
+const raw = $input.first().json.message.content;
+const parsed = JSON.parse(raw);
+
+return [{
+  json: {
+    ...parsed,
+    generatedAt: new Date().toISOString(),
+    weekOf: $('데이터조회').first().json.weekOf,
+  }
+}];
+```
+
+### Step 4: DB에 저장
+
+**Postgres 노드** (또는 Supabase, MySQL 등)에 생성된 컨텐츠를 upsert합니다.
+
+```sql
+INSERT INTO weekly_contents (week_of, data, generated_at)
+VALUES ({{ $json.weekOf }}, {{ $json | toJSON }}, NOW())
+ON CONFLICT (week_of) DO UPDATE SET data = EXCLUDED.data;
+```
+
+### Step 5: 프론트엔드에서 사용
+
+메인 페이지에서는 이 DB를 바라보기만 하면 됩니다.
+
+```tsx
+// 서버 컴포넌트
+async function WeeklyContent() {
+  const content = await getWeeklyContent(); // DB 조회
+
+  return (
+    <section>
+      <h2>{content.headline}</h2>
+      <p>{content.subheadline}</p>
+      <ul>
+        {content.items.map((item) => (
+          <li key={item.id}>
+            <span className="badge">{item.badge}</span>
+            {item.label}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+```
+
+배포 없이 DB 데이터만 바뀌면 다음 요청부터 새 컨텐츠가 노출됩니다.
+
+---
+
+## n8n 설치 및 로컬 실행
+
+### Docker로 빠르게 시작
+
+```bash
+docker run -it --rm \
+  --name n8n \
+  -p 5678:5678 \
+  -v ~/.n8n:/home/node/.n8n \
+  n8nio/n8n
+```
+
+`http://localhost:5678` 에서 GUI에 접근할 수 있습니다.
+
+### 환경변수 설정 (OpenAI 연동 시)
+
+n8n GUI의 **Credentials** 메뉴에서 API 키를 등록합니다. 코드에 키를 노출하지 않고 워크플로우 내에서 안전하게 관리됩니다.
+
+---
+
+## 프론트엔드 관점에서 n8n 활용 정리
+
+| 케이스 | n8n 활용 방법 |
+|--------|--------------|
+| 주간 컨텐츠 자동 생성 | Schedule + AI 노드 + DB 저장 |
+| 배포 알림 | GitHub Actions Webhook → Slack |
+| 간단한 백엔드 API | Webhook 트리거 → 데이터 처리 → 응답 반환 |
+| 폼 데이터 처리 | Webhook → DB 저장 + 이메일 발송 |
+| 에러 수집 알림 | Sentry Webhook → Slack / Jira 이슈 생성 |
+| 콘텐츠 번역 자동화 | 새 컨텐츠 감지 → DeepL/OpenAI → 다국어 DB 저장 |
+
+---
+
+## 주의할 점
+
+**n8n은 실행 환경이 필요합니다.** 로컬에서 테스트는 되지만, 스케줄 트리거를 실제로 운영하려면 서버가 항상 떠 있어야 합니다. 선택지는 세 가지입니다.
+
+1. **n8n Cloud** — 유료지만 관리 부담 없음
+2. **Railway / Render 등 PaaS** — 무료 티어로 셀프 호스팅 가능
+3. **EC2 / VPS** — 완전한 제어권, 비용 직접 관리
+
+컨텐츠 자동화처럼 비용이 발생하는 AI API를 쓰는 경우, **실행 횟수와 토큰 사용량**을 n8n 로그와 OpenAI 대시보드에서 같이 모니터링하는 것이 중요합니다.
+
+---
+
+## 정리
+
+n8n은 프론트엔드 개발자가 백엔드 리소스 없이 자동화를 구현할 수 있는 현실적인 도구입니다. 특히 AI API를 워크플로우에 연결하는 부분에서 코드 작성 없이 빠르게 프로토타입을 만들 수 있습니다.
+
+주간 컨텐츠 자동화처럼 **"정해진 시점에, 데이터를 가공해서, 어딘가에 저장한다"** 는 패턴은 n8n이 가장 잘하는 영역입니다. 배포 없이 서비스 컨텐츠를 살아있게 만드는 것 — 그게 자동화가 프론트엔드에 가져다주는 가장 큰 가치입니다.
