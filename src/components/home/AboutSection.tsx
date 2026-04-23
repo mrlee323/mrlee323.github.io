@@ -1,4 +1,4 @@
-import { SITE_CONFIG } from '@/lib/config';
+import { SITE_CONFIG } from "@/lib/config";
 
 export default function AboutSection() {
   const { author } = SITE_CONFIG;
@@ -8,12 +8,23 @@ export default function AboutSection() {
       <div className="container">
         <div className="about-grid">
           {/* Avatar */}
-          <div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+            }}
+          >
             <img
-                src="/images/profile.png"
-                alt={author.name}
-                style={{ width: 120, height: 120, borderRadius: '50%', objectFit: 'cover' }}
-              />
+              src="/images/profile.png"
+              alt={author.name}
+              style={{
+                width: 300,
+                height: 300,
+                borderRadius: "50%",
+                objectFit: "cover",
+              }}
+            />
           </div>
 
           {/* Content */}
@@ -28,16 +39,23 @@ export default function AboutSection() {
                 {author.skills.map((skill) => (
                   <div key={skill.category} className="skill-category">
                     <div className="skill-category-name">
-                      {skill.icon === '▲' ? (
+                      {skill.icon === "▲" ? (
                         <span style={{ color: skill.color }}>▲</span>
                       ) : (
-                        <i className={skill.icon} style={{ color: skill.color }} />
+                        <i
+                          className={skill.icon}
+                          style={{ color: skill.color }}
+                        />
                       )}
-                      <span style={{ color: skill.color }}>{skill.category}</span>
+                      <span style={{ color: skill.color }}>
+                        {skill.category}
+                      </span>
                     </div>
                     <div className="skill-list">
                       {skill.items.map((item) => (
-                        <span key={item} className="skill-item">{item}</span>
+                        <span key={item} className="skill-item">
+                          {item}
+                        </span>
                       ))}
                     </div>
                   </div>
