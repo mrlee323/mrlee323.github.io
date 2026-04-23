@@ -9,7 +9,11 @@ export default function AboutSection() {
         <div className="about-grid">
           {/* Avatar */}
           <div>
-            <div className="about-avatar">👩‍💻</div>
+            <img
+                src="/images/profile.png"
+                alt={author.name}
+                style={{ width: 120, height: 120, borderRadius: '50%', objectFit: 'cover' }}
+              />
           </div>
 
           {/* Content */}

@@ -55,9 +55,11 @@ export default function HeroSection() {
           {/* Right: Profile Card */}
           <div>
             <div className="profile-card">
-              <div className="profile-avatar" style={{ width: 80, height: 80, borderRadius: '50%', marginBottom: '1rem' }}>
-                👩‍💻
-              </div>
+              <img
+                src="/images/profile.png"
+                alt={author.name}
+                style={{ width: 80, height: 80, borderRadius: '50%', marginBottom: '1rem', objectFit: 'cover' }}
+              />
               <h3 className="profile-name">{author.name}</h3>
               <p className="profile-role">{author.role}</p>
               <div className="tech-tags">
