@@ -1,5 +1,5 @@
-import Link from 'next/link';
-import { SITE_CONFIG } from '@/lib/config';
+import Link from "next/link";
+import { SITE_CONFIG } from "@/lib/config";
 
 export default function HeroSection() {
   const { author } = SITE_CONFIG;
@@ -21,8 +21,9 @@ export default function HeroSection() {
             </h1>
 
             <p className="hero-description">
-              React, TypeScript, Next.js를 중심으로<br />
-              사용자 경험을 개선하는 프론트엔드 개발을 탐구합니다.
+              Next.js, React, TypeScript를 중심으로
+              <br />
+              SEO와 SSR·CSR, AI 기반 업무 자동화를 함께 고민합니다.
             </p>
 
             <div className="hero-stats">
@@ -58,19 +59,32 @@ export default function HeroSection() {
               <img
                 src="/images/profile.png"
                 alt={author.name}
-                style={{ width: 80, height: 80, borderRadius: '50%', marginBottom: '1rem', objectFit: 'cover' }}
+                style={{
+                  width: 80,
+                  height: 80,
+                  borderRadius: "50%",
+                  marginBottom: "1rem",
+                  objectFit: "cover",
+                }}
               />
               <h3 className="profile-name">{author.name}</h3>
               <p className="profile-role">{author.role}</p>
               <div className="tech-tags">
                 {author.techStack.map((tech) => {
-                  const cls = tech === 'React' ? 'react'
-                    : tech === 'TypeScript' ? 'typescript'
-                    : tech === 'Next.js' ? 'nextjs'
-                    : tech === 'Tailwind CSS' ? 'cssdesign'
-                    : 'ai';
+                  const cls =
+                    tech === "React"
+                      ? "react"
+                      : tech === "TypeScript"
+                        ? "typescript"
+                        : tech === "Next.js"
+                          ? "nextjs"
+                          : tech === "Tailwind CSS"
+                            ? "cssdesign"
+                            : "ai";
                   return (
-                    <span key={tech} className={`tech-tag ${cls}`}>{tech}</span>
+                    <span key={tech} className={`tech-tag ${cls}`}>
+                      {tech}
+                    </span>
                   );
                 })}
               </div>

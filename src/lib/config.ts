@@ -6,7 +6,7 @@ export const SITE_CONFIG = {
   author: {
     name: '이미림',
     role: 'Frontend Developer',
-    bio: '비즈니스 로직의 결함을 기술로 방어하고, 인프라 효율을 고민하는 프론트엔드 엔지니어입니다.\nReact와 TypeScript를 주력으로 사용하며, 결제 도메인의 무결성을 책임져온 3년 7개월차 Frontend Developer입니다.\n성능 최적화와 안정적인 아키텍처 설계에 관심이 많고, 비즈니스 가치를 기술로 증명하는 개발을 추구합니다.\n이 블로그에서는 실제 개발 과정의 문제와 해결 방법, 최신 프론트엔드 기술 트렌드를 공유합니다.',
+    bio: '주로 Next.js, React, TypeScript로 웹 서비스를 개발해왔습니다. 라우팅과 데이터 패턴에 맞춰 SEO, SSR, CSR 등 렌더링 전략을 함께 고려하며 사용자와 비즈니스에 맞는 화면을 설계하고 구현합니다.\nAI 시대에는 단순한 구현을 넘어서 업무 자동화와 효율성 향상까지 함께 고민하는 개발자가 중요하다고 생각합니다. 반복 업무를 줄이고 더 중요한 문제 해결에 집중할 수 있는 개발 방식을 지향합니다.\n결제 도메인의 무결성을 책임져온 3년 7개월차 프론트엔드 개발자로서, 안정적인 서비스 운영과 생산성 높은 협업 구조를 함께 만드는 데 관심이 많습니다. 이 블로그에서는 실제 개발 과정의 문제와 해결 방법, 최신 프론트엔드 기술 트렌드를 공유합니다.',
     github: 'mrlee323',
     email: 'mrlee3233@gmail.com',
     techStack: ['React', 'TypeScript', 'Next.js', 'Tailwind CSS', 'Vite'],
@@ -27,7 +27,7 @@ export const SITE_CONFIG = {
         category: 'Next.js',
         icon: '▲',
         color: '#e2e8f0',
-        items: ['Next.js 15', 'App Router', 'Server Actions', 'Turborepo', 'Vercel'],
+        items: ['Next.js 15', 'App Router', 'SEO · SSR · CSR', 'Server Actions', 'Vercel'],
       },
       {
         category: 'CSS/Design',
