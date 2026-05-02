@@ -1,0 +1,404 @@
+---
+title: "XState v5로 복잡한 위저드 UI 설계하기"
+date: "2026-05-02"
+category: "react"
+excerpt: "useState로는 감당이 안 되는 다단계 위저드 UI를 XState v5로 설계한 실전 사례. 비동기 AI 생성 → 에러 처리 → 단계별 되돌아가기까지 상태 머신으로 모델링하는 방법을 공유합니다."
+tags: ["XState", "상태 머신", "위저드", "React", "TypeScript"]
+readingTime: 15
+---
+
+## 왜 상태 머신이 필요했나?
+
+어드민 쇼케이스 생성 위저드를 설계하면서 요구사항을 정리했습니다.
+
+- 도시 선택 → 기간 설정 → 프롬프트 입력 → AI 타이틀 생성 → AI 이미지 생성 → 호텔 선택 → 저장 (총 7단계)
+- 각 단계에서 이전 단계로 돌아갈 수 있음
+- AI 생성 단계는 비동기, 실패 시 해당 단계만 재시도
+- 이미지는 재생성 또는 직접 업로드 선택 가능
+- 어느 단계에서든 RESET으로 처음부터 시작
+
+`useState` 여러 개로 시작했을 때 문제가 명확해졌습니다. "지금 어느 단계인가"와 "각 단계의 데이터"를 따로 관리하다 보니, 잘못된 상태 조합이 가능해졌습니다. 타이틀이 없는데 이미지 생성 단계로 가거나, 로딩 중에 버튼이 두 번 눌리는 식으로요.
+
+**상태 머신은 "지금 가능한 상태"와 "지금 가능한 전이"를 명시적으로 정의합니다.** 불가능한 상태 조합 자체가 코드에 존재하지 않습니다.
+
+---
+
+## XState v5 기본 구조
+
+v5에서 가장 큰 변화는 `setup().createMachine()` 패턴입니다. 이전 v4와 달리 타입 추론이 훨씬 강력해졌습니다.
+
+```ts
+import { setup, assign, fromPromise } from "xstate";
+
+const myMachine = setup({
+  types: {
+    context: {} as MyContext,   // 상태 데이터 타입
+    events: {} as MyEvent,      // 이벤트 타입
+    input: {} as MyInput,       // 초기 입력 타입
+  },
+  actors: { ... },   // 비동기 작업 (Promise, Observable 등)
+  guards: { ... },   // 조건부 전이 판단 함수
+}).createMachine({
+  id: "myMachine",
+  initial: "idle",
+  context: ({ input }) => ({ ... }),
+  states: { ... },
+});
+```
+
+`setup()`에서 타입과 액터, 가드를 먼저 선언하고, `createMachine()`에서 실제 상태 전이를 정의합니다. 이 분리 덕분에 `createMachine()` 내부에서 완전한 타입 추론이 됩니다.
+
+---
+
+## 컨텍스트와 이벤트 설계
+
+상태 머신을 만들 때 가장 먼저 하는 일은 **컨텍스트(데이터)** 와 **이벤트(트리거)** 를 정의하는 것입니다.
+
+```ts
+// 컨텍스트: 위저드 전체에서 공유되는 데이터
+export interface ShowcaseCreationContext {
+  cityName: string;
+  startDate: string;
+  endDate: string;
+  prompt: string;
+  title: string;
+  imageUrl: string;
+  hotels: ShowcaseHotelCard[];
+  selectedHotelIds: string[];
+  errorMessage: string;
+  failedState: "generatingTitle" | "generatingImage" | "generatingHotels" | "saving" | null;
+  showcaseService: ShowcaseService; // 서비스 주입
+}
+
+// 이벤트: 상태를 바꿀 수 있는 모든 트리거
+export type ShowcaseCreationEvent =
+  | { type: "START" }
+  | { type: "SUBMIT_CITY"; cityName: string }
+  | { type: "SUBMIT_PERIOD"; startDate: string; endDate: string }
+  | { type: "SUBMIT_PROMPT"; prompt: string }
+  | { type: "CONFIRM" }
+  | { type: "UPDATE_TITLE"; title: string }
+  | { type: "REGENERATE_IMAGE" }
+  | { type: "TOGGLE_HOTEL"; hotelId: string }
+  | { type: "BACK" }
+  | { type: "RETRY" }
+  | { type: "RESET" };
+```
+
+`failedState`가 흥미로운 부분입니다. error 상태에서 RETRY 이벤트가 왔을 때 어느 단계로 돌아가야 하는지를 컨텍스트에 기록해둡니다. 이렇게 하면 error 상태 하나로 모든 단계의 에러를 처리할 수 있습니다.
+
+---
+
+## 비동기 액터: fromPromise
+
+AI 생성처럼 비동기 작업은 `fromPromise`로 액터를 만듭니다. 액터는 Promise를 반환하는 함수를 상태 머신에서 실행 가능한 단위로 감싸줍니다.
+
+```ts
+setup({
+  actors: {
+    generateTitle: fromPromise<
+      string,                                          // 성공 시 반환 타입
+      { cityName: string; prompt: string; service: ShowcaseService } // input 타입
+    >(async ({ input }) =>
+      generateShowcaseTitle(input.service, input.cityName, input.prompt)
+    ),
+
+    generateImage: fromPromise<string, { cityName: string; title: string; prompt: string; service: ShowcaseService }>(
+      async ({ input }) => generateShowcaseImage(input.service, input.cityName, input.title, input.prompt)
+    ),
+
+    saveShowcase: fromPromise<unknown, { draft: ShowcaseCreationDraft; service: ShowcaseService }>(
+      async ({ input }) => input.service.createShowcase(input.draft)
+    ),
+  },
+})
+```
+
+`setup()`에서 액터를 미리 선언해두면, `createMachine()` 내부에서 이름으로 참조할 때 입출력 타입이 자동으로 추론됩니다.
+
+---
+
+## 상태 전이 설계
+
+7단계 위저드의 전체 상태 흐름입니다.
+
+```
+idle
+  → (START) → inputtingCity
+  → (SUBMIT_CITY) → settingPeriod
+  → (SUBMIT_PERIOD) → settingPrompt
+  → (SUBMIT_PROMPT) → generatingTitle  (또는 editingTitle — 가드)
+  → (자동) → editingTitle
+  → (CONFIRM) → generatingImage
+  → (자동) → reviewingImage
+  → (CONFIRM) → generatingHotels
+  → (자동) → selectingHotels
+  → (CONFIRM) → saving
+  → (자동) → done ✓
+
+에러 발생 시 → error
+  → (RETRY) → 실패한 단계로 복귀
+```
+
+비동기 상태는 항상 쌍으로 옵니다. `generatingTitle`은 실행 중이고, 성공하면 `editingTitle`로 전이됩니다.
+
+### invoke로 비동기 상태 구현
+
+```ts
+generatingTitle: {
+  invoke: {
+    src: "generateTitle",           // setup()에서 선언한 액터 이름
+    input: ({ context }) => ({      // 액터에 넘길 입력값
+      cityName: context.cityName,
+      prompt: context.prompt,
+      service: context.showcaseService,
+    }),
+    onDone: {
+      target: "editingTitle",
+      actions: assign({
+        title: ({ event }) => event.output,  // 액터 반환값
+      }),
+    },
+    onError: {
+      target: "error",
+      actions: assign({
+        errorMessage: ({ event }) =>
+          (event.error as Error)?.message ?? "타이틀 생성 중 오류가 발생했습니다.",
+        failedState: () => "generatingTitle" as const,
+      }),
+    },
+  },
+},
+```
+
+`onDone`과 `onError`로 성공/실패 분기를 깔끔하게 처리합니다. 컴포넌트에 try/catch가 없어도 됩니다.
+
+### 가드로 조건부 전이
+
+프롬프트가 바뀌지 않았다면 타이틀을 다시 생성할 필요가 없습니다. 가드로 이런 조건부 전이를 선언합니다.
+
+```ts
+// setup()에서 가드 정의
+guards: {
+  hasTitleAlready: ({ context, event }) =>
+    context.title !== "" &&
+    (event as { prompt?: string }).prompt === context.prompt,
+},
+
+// 상태 전이에서 가드 사용
+settingPrompt: {
+  on: {
+    SUBMIT_PROMPT: [
+      {
+        guard: "hasTitleAlready",   // 타이틀 있고 프롬프트 동일 → 생성 스킵
+        target: "editingTitle",
+        actions: assign({ prompt: ({ event }) => event.prompt }),
+      },
+      {
+        target: "generatingTitle",  // 나머지 → 타이틀 재생성
+        actions: assign({ prompt: ({ event }) => event.prompt }),
+      },
+    ],
+  },
+},
+```
+
+배열로 여러 전이를 나열하면 가드를 위에서부터 순서대로 평가합니다. 조건이 맞는 첫 번째 전이가 실행됩니다.
+
+### 에러 재시도
+
+`failedState`를 활용해 에러 상태에서 실패한 단계로 정확히 돌아갑니다.
+
+```ts
+// setup()에서 가드 정의
+guards: {
+  isFailedAtTitle:  ({ context }) => context.failedState === "generatingTitle",
+  isFailedAtImage:  ({ context }) => context.failedState === "generatingImage",
+  isFailedAtHotels: ({ context }) => context.failedState === "generatingHotels",
+  isFailedAtSaving: ({ context }) => context.failedState === "saving",
+},
+
+// error 상태
+error: {
+  on: {
+    RETRY: [
+      { guard: "isFailedAtTitle",  target: "generatingTitle" },
+      { guard: "isFailedAtImage",  target: "generatingImage" },
+      { guard: "isFailedAtHotels", target: "generatingHotels" },
+      { guard: "isFailedAtSaving", target: "saving" },
+    ],
+  },
+},
+```
+
+이미지 생성에서 실패했다면, RETRY는 타이틀 생성부터 다시 하지 않고 이미지 생성만 재시도합니다. AI API 호출 비용이 있는 경우 특히 중요합니다.
+
+---
+
+## 서비스 주입으로 테스트 가능하게
+
+`showcaseService`를 컨텍스트에 담아 외부에서 주입받는 구조입니다. 이렇게 하면 실제 API 대신 목(Mock) 서비스를 주입해 단위 테스트가 가능합니다.
+
+```ts
+// 실제 사용
+const [state, send] = useMachine(showcaseCreationMachine, {
+  input: { showcaseService: realShowcaseService },
+});
+
+// 테스트에서
+const [state, send] = useMachine(showcaseCreationMachine, {
+  input: { showcaseService: mockShowcaseService },
+});
+```
+
+상태 머신 자체는 서비스 구현체를 모릅니다. 인터페이스(`ShowcaseService`)만 알고 있기 때문에 테스트 환경에서 어떤 구현체든 주입할 수 있습니다.
+
+---
+
+## 컴포넌트에서 useMachine 사용
+
+```tsx
+export function ShowcaseCreationWizard() {
+  const [state, send] = useMachine(showcaseCreationMachine, {
+    input: { showcaseService },
+  });
+
+  const stateValue = state.value as string;
+  const { cityName, title, imageUrl, hotels, selectedHotelIds, errorMessage } = state.context;
+
+  // idle → 자동으로 START
+  useEffect(() => {
+    if (state.matches("idle")) send({ type: "START" });
+  }, [state, send]);
+
+  // 현재 상태에 맞는 스텝 렌더링
+  const renderStepContent = () => {
+    if (state.matches("error")) {
+      return (
+        <ErrorView
+          message={errorMessage}
+          onRetry={() => send({ type: "RETRY" })}
+          onReset={() => send({ type: "RESET" })}
+        />
+      );
+    }
+
+    if (state.matches("done")) return <DoneView title={title} />;
+
+    if (isGeneratingState(stateValue)) {
+      return <LoadingIndicator message={getLoadingMessage(stateValue)} />;
+    }
+
+    if (state.matches("editingTitle")) {
+      return (
+        <TitleEditStep
+          title={title}
+          onConfirm={() => send({ type: "CONFIRM" })}
+          onUpdateTitle={(t) => send({ type: "UPDATE_TITLE", title: t })}
+          onBack={() => send({ type: "BACK" })}
+        />
+      );
+    }
+
+    // ... 나머지 단계
+  };
+
+  return (
+    <div>
+      <StepIndicator currentStep={getStepNumber(stateValue)} />
+      <Card>{renderStepContent()}</Card>
+    </div>
+  );
+}
+```
+
+`state.matches("editingTitle")`처럼 현재 상태를 체크하면 됩니다. 상태 머신이 불가능한 전이를 막아주기 때문에, 컴포넌트는 "지금 어떤 상태인가"만 보고 렌더링하면 됩니다.
+
+---
+
+## 스텝 인디케이터: 상태 → UI 매핑
+
+7개 상태(generatingTitle, editingTitle 등)를 7단계 UI에 매핑할 때 객체 하나로 관리합니다.
+
+```ts
+const stateStepMap: Record<string, number> = {
+  idle: 1,
+  inputtingCity: 1,
+  settingPeriod: 2,
+  settingPrompt: 3,
+  generatingTitle: 4,
+  editingTitle: 4,      // generating과 editing이 같은 스텝
+  generatingImage: 5,
+  reviewingImage: 5,
+  generatingHotels: 6,
+  selectingHotels: 6,
+  saving: 7,
+  done: 7,
+  error: 0,             // 에러는 스텝 표시 없음
+};
+```
+
+`generatingTitle`과 `editingTitle`은 내부적으로 다른 상태지만 사용자에게는 같은 4번 스텝입니다. 상태 머신은 세밀하게, UI는 단순하게 유지할 수 있습니다.
+
+---
+
+## useState와 비교
+
+같은 위저드를 `useState`로 만들면 대략 이런 모습이 됩니다.
+
+```ts
+// useState 방식
+const [step, setStep] = useState(1);
+const [isLoading, setIsLoading] = useState(false);
+const [error, setError] = useState<string | null>(null);
+const [cityName, setCityName] = useState("");
+const [title, setTitle] = useState("");
+// ... 10개 넘는 상태
+
+const handleConfirm = async () => {
+  if (step === 3) {
+    setIsLoading(true);
+    try {
+      const result = await generateTitle(cityName);
+      setTitle(result);
+      setStep(4);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  // ...
+};
+```
+
+문제는 `step`과 `isLoading`이 각각 독립된 상태라는 점입니다. `step === 4`이면서 `isLoading === true`인 상태가 가능합니다. 실제로는 있어서는 안 되는 조합입니다.
+
+XState에서는 `generatingTitle` 상태 하나가 "타이틀 생성 중"을 완전히 표현합니다. `step`도 `isLoading`도 따로 관리할 필요가 없습니다.
+
+---
+
+## 언제 XState를 쓸까
+
+모든 UI에 상태 머신이 필요하지는 않습니다.
+
+**XState가 적합한 경우:**
+- 3단계 이상의 다단계 플로우
+- 비동기 작업이 여러 단계에 포함된 경우
+- 에러 → 재시도 → 특정 단계 복귀 같은 복잡한 에러 처리
+- 결제, 온보딩, 콘텐츠 생성 위저드
+
+**useState로 충분한 경우:**
+- 단순한 토글, 입력 상태
+- 2단계 이하의 플로우
+- 상태 조합이 단순한 경우
+
+상태의 수가 많거나 상태 간 전이 조건이 복잡해질 때, 코드에서 "지금 이 상태에서는 이 버튼이 눌리면 안 된다"를 손으로 막아야 할 때가 XState를 고려할 타이밍입니다.
+
+---
+
+## 정리
+
+XState v5는 `setup().createMachine()` 패턴으로 타입 안전성이 크게 개선되었습니다. 위저드 UI처럼 **상태가 많고 전이 조건이 복잡한 경우**, 상태 머신은 코드를 줄여주는 것보다 **불가능한 상태를 원천적으로 막아주는** 역할이 더 큽니다.
+
+`failedState`로 에러를 추적하고, 가드로 조건부 전이를 선언하고, 서비스를 주입해 테스트 가능하게 만드는 패턴은 실제 프로덕션에서도 그대로 쓸 수 있습니다.
