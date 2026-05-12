@@ -1,0 +1,303 @@
+---
+title: "WebGPU와 브라우저 내 AI 추론: 프론트엔드 개발자가 알아야 할 것"
+date: "2026-05-11"
+category: "ai"
+excerpt: "서버 없이 브라우저에서 AI 모델을 직접 실행하는 시대가 왔습니다. WebGPU가 무엇인지, transformers.js·WebLLM으로 실제로 무엇을 만들 수 있는지, 프론트엔드 개발자 관점에서 정리합니다."
+tags: ["WebGPU", "브라우저 AI", "transformers.js", "WebLLM", "온디바이스 AI"]
+readingTime: 13
+---
+
+## 브라우저가 GPU를 쓰기 시작했다
+
+2023년 Chrome 113에서 WebGPU가 정식 지원되면서 브라우저에서 GPU를 직접 다룰 수 있게 됐습니다. 그리고 이 변화가 AI와 만나면서 흥미로운 일이 일어나고 있습니다.
+
+**브라우저에서 AI 모델을 직접 실행할 수 있게 된 것입니다.**
+
+서버에 요청을 보내고 응답을 기다리는 방식이 아닙니다. 모델 가중치를 브라우저로 내려받고, WebGPU로 연산을 처리해서 결과를 즉시 반환합니다. 네트워크 지연이 없고, API 비용도 없고, 사용자 데이터가 서버로 나가지 않습니다.
+
+---
+
+## WebGPU vs WebGL: 무엇이 달라졌나
+
+이전에도 브라우저에서 GPU를 쓸 수 있었습니다. WebGL이 있었죠. 그런데 WebGL은 원래 3D 그래픽 렌더링을 위해 설계된 API입니다. AI 연산에 필요한 **범용 병렬 계산(General Purpose GPU Computing)** 에는 맞지 않았습니다.
+
+WebGPU는 처음부터 범용 GPU 컴퓨팅을 염두에 두고 설계됐습니다.
+
+| | WebGL | WebGPU |
+|---|---|---|
+| 설계 목적 | 3D 그래픽 렌더링 | 범용 GPU 컴퓨팅 + 렌더링 |
+| 컴퓨트 셰이더 | 제한적 | 완전 지원 |
+| AI 추론 적합성 | 낮음 | 높음 |
+| API 스타일 | OpenGL 기반 | Metal/Vulkan/DX12 기반 |
+| 브라우저 지원 | 거의 모든 브라우저 | Chrome 113+, Firefox (부분), Safari (부분) |
+
+AI 모델 추론은 행렬 곱셈의 연속입니다. 이 연산을 CPU 대신 GPU에서 병렬로 처리하면 수십 배 빨라집니다. WebGPU의 컴퓨트 셰이더가 바로 이 역할을 합니다.
+
+---
+
+## 실제로 무엇을 실행할 수 있나
+
+### transformers.js — Hugging Face 모델을 브라우저에서
+
+가장 쉽게 시작할 수 있는 방법입니다. Hugging Face의 수천 개 모델을 브라우저에서 바로 쓸 수 있습니다.
+
+```bash
+npm install @huggingface/transformers
+```
+
+```ts
+import { pipeline } from "@huggingface/transformers";
+
+// 감성 분석
+const classifier = await pipeline("sentiment-analysis");
+const result = await classifier("이 호텔 정말 좋았어요!");
+// [{ label: "POSITIVE", score: 0.998 }]
+
+// 텍스트 임베딩 (검색, 추천에 활용)
+const embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+const embedding = await embedder("제주 오션뷰 호텔", { pooling: "mean", normalize: true });
+```
+
+첫 실행 시 모델 가중치를 다운로드해서 캐싱합니다. 이후에는 오프라인에서도 동작합니다.
+
+지원하는 태스크:
+
+```
+텍스트 분류     sentiment-analysis, text-classification
+번역           translation
+요약           summarization
+질의응답       question-answering
+이미지 분류    image-classification
+객체 감지      object-detection
+이미지 분할    image-segmentation
+음성 인식      automatic-speech-recognition (Whisper)
+텍스트 생성    text-generation
+```
+
+### WebLLM — 브라우저에서 LLM 실행
+
+더 나아가 LLM 자체를 브라우저에서 실행할 수 있습니다.
+
+```ts
+import * as webllm from "@mlc-ai/web-llm";
+
+const engine = await webllm.CreateMLCEngine("Llama-3.2-3B-Instruct-q4f32_1-MLC", {
+  initProgressCallback: (report) => {
+    console.log(`모델 로딩: ${Math.round(report.progress * 100)}%`);
+  },
+});
+
+const response = await engine.chat.completions.create({
+  messages: [{ role: "user", content: "제주도 여행 일정 3일 코스 추천해줘" }],
+  stream: true,
+});
+
+for await (const chunk of response) {
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
+}
+```
+
+OpenAI SDK와 동일한 인터페이스를 씁니다. 서버 코드를 브라우저용으로 그대로 가져올 수 있습니다.
+
+현재 실행 가능한 모델:
+- **Llama 3.2 3B** — 일반 대화, 요약, 분류
+- **Phi-3.5 Mini** — 가볍고 빠름, 추론 능력 우수
+- **Gemma 2 2B** — 구글 모델, 다국어 지원
+- **Mistral 7B** (고사양 필요) — 고품질 텍스트 생성
+
+---
+
+## 프론트엔드에서 어디에 쓸 수 있을까
+
+### 1. 실시간 입력 분류/필터링
+
+사용자가 타이핑하는 동안 서버 요청 없이 즉시 분류합니다.
+
+```tsx
+import { pipeline } from "@huggingface/transformers";
+
+// Web Worker에서 실행 (UI 블로킹 방지)
+const classifier = await pipeline("text-classification", "Xenova/toxic-bert");
+
+function ReviewInput() {
+  const [text, setText] = useState("");
+  const [isToxic, setIsToxic] = useState(false);
+
+  const handleChange = async (value: string) => {
+    setText(value);
+    if (value.length > 20) {
+      const [result] = await classifier(value);
+      setIsToxic(result.label === "toxic" && result.score > 0.8);
+    }
+  };
+
+  return (
+    <div>
+      <textarea onChange={(e) => handleChange(e.target.value)} />
+      {isToxic && <p className="text-red-500">부적절한 내용이 포함될 수 있습니다.</p>}
+    </div>
+  );
+}
+```
+
+모든 텍스트가 서버로 전송되지 않아 개인정보 보호 측면에서도 유리합니다.
+
+### 2. 이미지 분석 (업로드 전 처리)
+
+```tsx
+import { pipeline } from "@huggingface/transformers";
+
+const classifier = await pipeline("image-classification", "Xenova/vit-base-patch16-224");
+
+async function analyzeImage(file: File) {
+  const url = URL.createObjectURL(file);
+  const results = await classifier(url);
+
+  // 호텔 사진인지 확인
+  const isHotelRelated = results.some(
+    (r) => r.label.includes("hotel") || r.label.includes("building") && r.score > 0.7
+  );
+
+  return { results, isHotelRelated };
+}
+```
+
+### 3. 의미 기반 검색 (벡터 검색)
+
+키워드 매칭이 아니라 의미로 검색합니다.
+
+```ts
+import { pipeline } from "@huggingface/transformers";
+
+const embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
+
+// 상품 목록 임베딩 (최초 1회)
+const products = ["제주 오션뷰 호텔", "부산 해운대 리조트", "서울 도심 비즈니스 호텔"];
+const productEmbeddings = await Promise.all(
+  products.map((p) => embedder(p, { pooling: "mean", normalize: true }))
+);
+
+// 검색어와 가장 유사한 상품 찾기
+async function semanticSearch(query: string) {
+  const queryEmbedding = await embedder(query, { pooling: "mean", normalize: true });
+
+  const scores = productEmbeddings.map((emb, i) => ({
+    product: products[i],
+    score: cosineSimilarity(queryEmbedding.data, emb.data),
+  }));
+
+  return scores.sort((a, b) => b.score - a.score);
+}
+
+// "바다가 보이는 숙소" 검색 → "제주 오션뷰 호텔"이 가장 높은 점수
+```
+
+### 4. Web Worker로 UI 블로킹 방지
+
+AI 추론은 무거운 작업입니다. 메인 스레드에서 실행하면 UI가 얼어붙습니다.
+
+```ts
+// ai-worker.ts
+import { pipeline } from "@huggingface/transformers";
+
+let classifier: Awaited<ReturnType<typeof pipeline>> | null = null;
+
+self.onmessage = async (event) => {
+  const { type, payload } = event.data;
+
+  if (type === "INIT") {
+    classifier = await pipeline("sentiment-analysis");
+    self.postMessage({ type: "READY" });
+  }
+
+  if (type === "CLASSIFY" && classifier) {
+    const result = await classifier(payload.text);
+    self.postMessage({ type: "RESULT", result });
+  }
+};
+```
+
+```ts
+// 컴포넌트에서
+const worker = new Worker(new URL("./ai-worker.ts", import.meta.url));
+
+worker.postMessage({ type: "INIT" });
+worker.onmessage = (e) => {
+  if (e.data.type === "READY") console.log("모델 준비됨");
+  if (e.data.type === "RESULT") setResult(e.data.result);
+};
+```
+
+---
+
+## 현실적인 제약
+
+기술이 흥미롭더라도 제약을 알고 써야 합니다.
+
+### 모델 크기와 초기 로딩
+
+| 모델 | 크기 | 초기 로딩 |
+|---|---|---|
+| MiniLM (임베딩) | ~23MB | 1~2초 |
+| DistilBERT (분류) | ~67MB | 3~5초 |
+| Whisper Tiny (음성) | ~75MB | 3~5초 |
+| Llama 3.2 3B (4bit) | ~2GB | 1~3분 |
+
+LLM은 첫 로딩이 오래 걸립니다. 사용자 경험을 위해 **진행률 UI**와 **캐싱 전략**이 필수입니다.
+
+```ts
+const engine = await webllm.CreateMLCEngine("Phi-3.5-mini-instruct-q4f16_1-MLC", {
+  initProgressCallback: ({ progress, text }) => {
+    updateProgressBar(progress); // 0~1
+    updateStatusText(text);       // "Loading model: 45%"
+  },
+});
+```
+
+### 브라우저 지원
+
+WebGPU는 Chrome 113+에서만 안정적으로 동작합니다. Firefox, Safari는 플래그를 켜야 하거나 지원이 불완전합니다. 모바일 지원도 제한적입니다.
+
+프로덕션에 적용할 때는 **WebGPU 지원 여부 확인 + CPU 폴백** 전략이 필요합니다.
+
+```ts
+const isWebGPUSupported = "gpu" in navigator;
+
+if (isWebGPUSupported) {
+  // WebGPU 기반 추론
+} else {
+  // 서버 API 폴백 또는 WASM 기반 추론
+}
+```
+
+### 메모리 한계
+
+모바일 기기는 GPU 메모리가 부족합니다. 3B 이상의 LLM은 고사양 데스크탑에서만 현실적입니다. 브라우저 내 AI는 **작고 특화된 모델** (임베딩, 분류, 소형 생성 모델)에서 가장 효과적입니다.
+
+---
+
+## 언제 쓸지 판단하는 기준
+
+```
+✅ 브라우저 AI가 적합한 경우
+- 개인정보가 민감한 데이터 처리 (의료, 금융 문서 분석 등)
+- 오프라인 동작이 필요한 앱
+- 입력마다 서버 요청이 비용/속도 문제가 되는 경우
+- 실시간 처리가 필요한 작은 분류/임베딩 태스크
+
+❌ 서버 AI가 더 나은 경우
+- 최신 고품질 LLM이 필요한 경우 (GPT-4o, Claude 등)
+- 모바일/저사양 환경이 주 타깃
+- 초기 로딩 지연이 UX에 치명적인 경우
+- 모델 업데이트가 자주 필요한 경우
+```
+
+---
+
+## 정리
+
+WebGPU와 브라우저 내 추론은 아직 "모든 프로젝트에 쓸 수 있는 기술"은 아닙니다. 브라우저 지원, 초기 로딩, 메모리 한계가 현실적인 제약입니다.
+
+하지만 **특정 상황에서는 서버보다 훨씬 나은 선택**입니다. 개인정보가 서버로 나가지 않고, API 비용이 없으며, 네트워크가 없어도 동작합니다.
+
+프론트엔드 개발자 입장에서 가장 현실적인 진입점은 `transformers.js`입니다. 임베딩으로 의미 기반 검색을 붙이거나, 텍스트 분류로 입력을 실시간으로 검증하는 것부터 시작해보세요. 서버 없이, API 키 없이 바로 실행됩니다.
