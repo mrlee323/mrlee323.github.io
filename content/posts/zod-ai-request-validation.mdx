@@ -1,0 +1,237 @@
+---
+title: "AI API 입력을 Zod로 검증해야 하는 이유"
+date: "2026-05-13"
+category: "typescript"
+excerpt: "잘못된 입력이 LLM까지 도달하면 생기는 문제들, 그리고 Zod로 요청을 런타임에 검증해 TypeScript 타입과 동시에 해결하는 방법을 공유합니다."
+tags: ["Zod", "TypeScript", "API", "검증", "AI"]
+readingTime: 5
+---
+
+## 잘못된 입력이 LLM까지 도달했을 때
+
+리뷰 AI 요약 기능을 붙이고 테스트하던 중 이상한 결과를 받은 적이 있습니다. 요약 카드에 "undefined 숙소의 리뷰를 분석했습니다"라는 문장이 나왔습니다.
+
+원인을 추적해보니 클라이언트에서 `hotelName`이 `undefined`인 채로 요청이 들어왔고, Route Handler는 별도 검증 없이 그대로 LLM에 넘겼습니다. LLM은 "호텔 이름: undefined"라는 입력을 받아 성실하게 요약문을 만들었습니다.
+
+두 가지 문제가 동시에 일어났습니다. 사용자는 이상한 결과를 봤고, LLM 호출 비용은 발생했습니다. 유효하지 않은 입력에 돈을 쓴 셈입니다.
+
+---
+
+## LLM API에서 입력 검증이 더 중요한 이유
+
+일반 CRUD API에서 잘못된 입력이 들어오면 DB 쿼리가 실패하거나 예외가 발생합니다. 빠르고 비용이 없습니다.
+
+LLM API는 다릅니다.
+
+- 잘못된 입력이 들어와도 LLM은 요청을 처리합니다. 에러 없이 이상한 결과를 반환합니다.
+- LLM 호출은 느립니다. 검증도 못 한 요청에 3~8초가 걸립니다.
+- 토큰 비용이 청구됩니다. `reviews` 배열이 비어 있어도 시스템 프롬프트 토큰은 나갑니다.
+
+입력 검증은 LLM 레이어 앞에서, Route Handler 진입 직후에 해야 합니다.
+
+---
+
+## Zod를 선택한 이유
+
+TypeScript의 타입은 컴파일 타임에만 존재합니다. 런타임에서 클라이언트가 보낸 JSON body의 타입을 TypeScript가 보장하지 않습니다.
+
+```ts
+// 이건 컴파일은 통과하지만, 런타임에서 hotelName이 없어도 에러가 나지 않습니다
+const { hotelName, reviews } = await req.json() as ReviewSummaryRequest;
+```
+
+Zod는 런타임 검증과 TypeScript 타입 추론을 동시에 해결합니다. schema를 정의하면 `z.infer`로 타입을 뽑아 쓸 수 있습니다. 타입 정의와 검증 로직을 한 곳에서 관리합니다.
+
+---
+
+## 요청 schema 설계
+
+```ts
+// lib/ai/schemas.ts
+
+import { z } from "zod";
+
+// 개별 리뷰 schema
+export const ReviewItemSchema = z.object({
+  id: z.string(),
+  content: z.string().min(1, "리뷰 내용이 비어 있습니다."),
+  rating: z.number().min(1).max(5),
+});
+
+// 요청 schema
+export const ReviewSummaryRequestSchema = z.object({
+  hotelName: z
+    .string()
+    .min(1, "숙소 이름이 필요합니다.")
+    .max(100, "숙소 이름이 너무 깁니다."),
+
+  reviews: z
+    .array(ReviewItemSchema)
+    .min(1, "리뷰가 최소 1개 이상 있어야 합니다.")
+    .max(100, "리뷰는 최대 100개까지 허용됩니다."),
+
+  question: z
+    .string()
+    .max(200, "질문은 200자 이내로 입력해주세요.")
+    .optional(),
+});
+
+// TypeScript 타입 추출
+export type ReviewSummaryRequest = z.infer<typeof ReviewSummaryRequestSchema>;
+```
+
+각 필드의 검증 규칙을 살펴보겠습니다.
+
+**hotelName**: `min(1)`으로 빈 문자열을 막고, `max(100)`으로 지나치게 긴 입력을 차단합니다. `undefined` 케이스는 `z.string()`이 자동으로 처리합니다.
+
+**reviews**: `min(1)`이 핵심입니다. 빈 배열로 LLM을 호출하면 의미 없는 결과가 나오고 비용이 발생합니다. `max(100)`은 의도치 않게 너무 많은 데이터가 들어와 토큰 비용이 폭발하는 것을 막습니다.
+
+**question**: `optional()`로 선택 필드로 만들었습니다. 질문이 없으면 일반적인 요약을, 있으면 질문에 집중한 요약을 생성합니다.
+
+---
+
+## Route Handler에서 검증 적용
+
+```ts
+// app/api/ai/review-summary/route.ts
+
+import { NextRequest, NextResponse } from "next/server";
+import { ZodError } from "zod";
+import { ReviewSummaryRequestSchema } from "@/lib/ai/schemas";
+import { generateReviewSummary } from "@/lib/ai/review-summary";
+
+export async function POST(req: NextRequest) {
+  let body: unknown;
+
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json(
+      { ok: false, code: "INVALID_JSON", message: "요청 형식이 올바르지 않습니다." },
+      { status: 400 }
+    );
+  }
+
+  // Zod 검증
+  const parsed = ReviewSummaryRequestSchema.safeParse(body);
+
+  if (!parsed.success) {
+    const firstError = parsed.error.errors[0];
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "VALIDATION_ERROR",
+        message: firstError.message,
+        field: firstError.path.join("."),
+      },
+      { status: 400 }
+    );
+  }
+
+  // 여기서부터 parsed.data는 완전히 타입이 보장됩니다
+  const { hotelName, reviews, question } = parsed.data;
+
+  try {
+    const result = await generateReviewSummary({ hotelName, reviews, question });
+    return NextResponse.json({ ok: true, data: result });
+  } catch (error) {
+    // LLM 에러 처리 (다음 포스팅에서 다룹니다)
+    return NextResponse.json(
+      { ok: false, code: "LLM_ERROR", message: "요약 생성에 실패했습니다." },
+      { status: 500 }
+    );
+  }
+}
+```
+
+`safeParse`를 쓰면 검증 실패 시 예외를 던지지 않고 `{ success: false, error }` 형태로 반환합니다. `parse`를 쓰면 실패 시 `ZodError`를 던지는데, try/catch로 감싸면 됩니다. 저는 `safeParse`가 더 명시적이라 선호합니다.
+
+검증을 통과한 `parsed.data`는 TypeScript 타입이 완전히 보장됩니다. 이후 코드에서 `hotelName`이 `string`이 아닐 가능성을 고려하지 않아도 됩니다.
+
+---
+
+## 에러 응답 설계
+
+검증 실패 응답에 `field`를 포함시켰습니다.
+
+```json
+{
+  "ok": false,
+  "code": "VALIDATION_ERROR",
+  "message": "리뷰가 최소 1개 이상 있어야 합니다.",
+  "field": "reviews"
+}
+```
+
+클라이언트가 어느 필드에서 검증이 실패했는지 알 수 있으면, 사용자에게 더 정확한 안내를 줄 수 있습니다. "요청에 실패했습니다"보다 "리뷰를 불러오지 못했습니다. 페이지를 새로고침해주세요."가 훨씬 낫습니다.
+
+클라이언트에서는 이렇게 처리할 수 있습니다.
+
+```ts
+// lib/api/review-summary.ts
+
+export async function fetchReviewSummary(
+  payload: ReviewSummaryRequest
+): Promise<ReviewSummaryResponse> {
+  const res = await fetch("/api/ai/review-summary", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const json = await res.json();
+
+  if (!json.ok) {
+    const err = new Error(json.message ?? "요약 요청에 실패했습니다.");
+    (err as any).code = json.code;
+    (err as any).field = json.field;
+    throw err;
+  }
+
+  return json.data;
+}
+```
+
+---
+
+## 클라이언트에서도 검증이 필요한가
+
+서버에서 검증을 하더라도 클라이언트에서 미리 걸러주면 LLM까지 가는 왕복 비용을 아낄 수 있습니다.
+
+같은 schema를 클라이언트에서도 재사용합니다.
+
+```tsx
+// app/components/review/ReviewSummaryPanel.tsx
+
+import { ReviewSummaryRequestSchema } from "@/lib/ai/schemas";
+
+function handleGenerateSummary() {
+  const payload = {
+    hotelName,
+    reviews: selectedReviews,
+    question: questionInput || undefined,
+  };
+
+  // 클라이언트 사전 검증
+  const result = ReviewSummaryRequestSchema.safeParse(payload);
+  if (!result.success) {
+    setError("리뷰 데이터를 불러오지 못했습니다. 페이지를 새로고침해주세요.");
+    return;
+  }
+
+  // 서버 요청
+  fetchReviewSummary(result.data).then(setSummary).catch(handleError);
+}
+```
+
+schema 파일 하나를 서버와 클라이언트가 공유합니다. 검증 규칙이 바뀌면 한 곳만 수정하면 됩니다.
+
+---
+
+## 정리
+
+AI API의 입력 검증은 단순한 방어적 코딩이 아닙니다. 잘못된 입력이 LLM까지 도달하면 비용, 품질, 사용자 경험 모두 나빠집니다.
+
+Zod는 TypeScript 타입과 런타임 검증을 하나의 schema로 통합합니다. `z.infer`로 뽑은 타입을 서버와 클라이언트가 공유하면, 요청 형태의 정보가 코드 전체에서 일관성을 유지합니다.
+
+LLM 호출 앞에 `safeParse` 한 줄이 이상한 요약과 낭비되는 토큰 비용을 막아줍니다.
