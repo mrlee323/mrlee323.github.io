@@ -1,0 +1,279 @@
+---
+title: "LLM 응답을 믿지 마라 — Structured Output 설계"
+date: "2026-05-14"
+category: "ai"
+excerpt: "LLM이 자유 텍스트를 반환하면 UI가 어떻게 무너지는지, 응답 형태를 강제하고 schema mismatch에 fallback을 처리하는 방법을 공유합니다."
+tags: ["AI", "Structured Output", "Zod", "LLM", "UI"]
+readingTime: 6
+---
+
+## 자유 텍스트가 UI를 무너뜨리는 방식
+
+LLM API를 처음 붙였을 때, 응답을 그냥 텍스트로 받아서 화면에 뿌렸습니다. "좋습니다. 이 숙소는..."으로 시작하는 긴 문단이었습니다. 디자인 시안과 전혀 달랐습니다.
+
+기획에서 원하는 건 장점 3개, 단점 3개, 추천 대상 태그, 주의사항 목록이었습니다. 긴 문단 하나로는 이 UI를 만들 수 없었습니다.
+
+JSON으로 반환해달라고 프롬프트를 바꿔봤습니다. 그랬더니 이번엔 마크다운 코드 블록으로 감싼 JSON이 왔습니다.
+
+````
+```json
+{
+  "summary": "...",
+  "pros": ["..."]
+}
+```
+````
+
+`JSON.parse`를 하면 파싱 에러가 났습니다. 정규식으로 코드 블록을 제거하는 코드를 썼는데, 어떤 응답은 `\`\`\`json`이 아니라 `\`\`\`` (언어 없는 코드 블록)으로 왔습니다.
+
+LLM의 자유 텍스트 응답을 UI 코드로 파싱하는 것은 끝이 없는 싸움입니다. 응답 형태를 코드 수준에서 강제해야 합니다.
+
+---
+
+## UI 친화적인 응답 구조 설계
+
+UI에서 필요한 것을 먼저 정의했습니다. 사용자가 예약 결정을 내리는 데 필요한 정보가 무엇인가.
+
+- **전체 요약**: 한두 문장으로 숙소를 한마디로 표현
+- **장점**: 리뷰에서 반복적으로 언급된 긍정적 포인트
+- **단점**: 솔직한 주의사항
+- **추천 대상**: "이런 여행자에게 적합합니다" — 태그로 표현 가능한 형태
+- **주의점**: 특정 유형의 여행자가 고려해야 할 사항
+- **근거 리뷰 ID**: 요약의 근거가 된 리뷰, UI에서 강조 표시용
+
+이 구조를 Zod schema로 표현했습니다.
+
+```ts
+// lib/ai/schemas.ts
+
+import { z } from "zod";
+
+export const ReviewSummaryResponseSchema = z.object({
+  summary: z.string().min(1),
+
+  pros: z
+    .array(z.string())
+    .min(1)
+    .max(5)
+    .describe("리뷰에서 반복 언급된 장점 목록"),
+
+  cons: z
+    .array(z.string())
+    .min(0)
+    .max(5)
+    .describe("단점 또는 주의사항 목록"),
+
+  recommendedFor: z
+    .array(z.string())
+    .min(1)
+    .max(4)
+    .describe("예: ['가족 여행', '비즈니스 출장', '커플 여행']"),
+
+  cautionPoints: z
+    .array(z.string())
+    .max(3)
+    .describe("특정 여행자가 고려해야 할 주의사항"),
+
+  evidenceReviewIds: z
+    .array(z.string())
+    .describe("요약 근거로 사용된 리뷰 ID 목록"),
+});
+
+export type ReviewSummaryResponse = z.infer<typeof ReviewSummaryResponseSchema>;
+```
+
+`describe()`는 Zod의 메타데이터 기능입니다. 응답 검증에는 영향을 주지 않지만, 이 schema를 보는 사람이 각 필드의 의도를 알 수 있게 합니다. 나중에 프롬프트에 이 설명을 활용할 수도 있습니다.
+
+---
+
+## 응답 형태를 강제하는 방법
+
+최신 LLM API는 JSON schema를 명시적으로 지정하는 기능을 제공합니다. OpenAI의 경우 `response_format`에 JSON schema를 넘길 수 있습니다.
+
+```ts
+// lib/ai/review-summary.ts
+
+import OpenAI from "openai";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import { ReviewSummaryResponseSchema, type ReviewSummaryRequest } from "./schemas";
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+export async function generateReviewSummary(
+  input: ReviewSummaryRequest
+): Promise<ReviewSummaryResponse> {
+  const systemPrompt = buildSystemPrompt(input.hotelName, input.question);
+  const userMessage = formatReviewsForPrompt(input.reviews);
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "review_summary",
+        schema: zodToJsonSchema(ReviewSummaryResponseSchema),
+        strict: true,
+      },
+    },
+  });
+
+  const raw = completion.choices[0]?.message?.content ?? "";
+  return parseAndValidate(raw);
+}
+```
+
+`zodToJsonSchema`로 Zod schema를 JSON schema로 변환합니다. `strict: true`를 설정하면 LLM이 정의된 필드 외의 내용을 반환하지 않습니다.
+
+Claude API를 사용한다면 `tool_use`로 같은 효과를 낼 수 있습니다.
+
+```ts
+// Claude API 방식
+const response = await anthropic.messages.create({
+  model: "claude-opus-4-5",
+  tools: [
+    {
+      name: "review_summary",
+      description: "숙소 리뷰를 분석하여 구조화된 요약을 생성합니다.",
+      input_schema: zodToJsonSchema(ReviewSummaryResponseSchema),
+    },
+  ],
+  tool_choice: { type: "tool", name: "review_summary" }, // 반드시 이 tool을 사용하도록 강제
+  messages: [{ role: "user", content: userMessage }],
+});
+
+const toolUse = response.content.find((c) => c.type === "tool_use");
+const raw = JSON.stringify(toolUse?.input ?? {});
+```
+
+---
+
+## schema mismatch 시 fallback 처리
+
+API로 응답 형태를 강제해도 예외가 생깁니다. 네트워크 중간에 응답이 잘려 오거나, `strict` 모드를 지원하지 않는 구형 모델을 쓰거나, 테스트용 목 응답을 쓸 때입니다.
+
+파싱 실패를 조용히 삼키면 안 됩니다. 빈 UI나 에러 없는 이상한 결과가 나옵니다.
+
+```ts
+// lib/ai/review-summary.ts
+
+function parseAndValidate(raw: string): ReviewSummaryResponse {
+  let parsed: unknown;
+
+  // 1. JSON 파싱 시도
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // 마크다운 코드 블록 제거 후 재시도
+    const cleaned = raw.replace(/```(?:json)?\n?([\s\S]*?)\n?```/g, "$1").trim();
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      throw new AiParseError("LLM 응답을 JSON으로 파싱할 수 없습니다.", raw);
+    }
+  }
+
+  // 2. Schema 검증
+  const result = ReviewSummaryResponseSchema.safeParse(parsed);
+
+  if (!result.success) {
+    // 부분 복구 시도: 필수 필드만 있으면 선택 필드를 기본값으로
+    const partial = attemptPartialRecovery(parsed);
+    if (partial) {
+      console.warn("[AI] 응답 schema mismatch, 부분 복구 적용", result.error.flatten());
+      return partial;
+    }
+
+    throw new AiParseError(
+      "LLM 응답이 예상 형태와 다릅니다.",
+      JSON.stringify(parsed)
+    );
+  }
+
+  return result.data;
+}
+
+function attemptPartialRecovery(raw: unknown): ReviewSummaryResponse | null {
+  if (typeof raw !== "object" || raw === null) return null;
+
+  const obj = raw as Record<string, unknown>;
+
+  // summary와 pros만 있으면 최소 복구
+  if (typeof obj.summary !== "string" || !Array.isArray(obj.pros)) return null;
+
+  return {
+    summary: obj.summary,
+    pros: obj.pros.filter((p): p is string => typeof p === "string"),
+    cons: Array.isArray(obj.cons)
+      ? obj.cons.filter((c): c is string => typeof c === "string")
+      : [],
+    recommendedFor: Array.isArray(obj.recommendedFor)
+      ? obj.recommendedFor.filter((r): r is string => typeof r === "string")
+      : [],
+    cautionPoints: Array.isArray(obj.cautionPoints)
+      ? obj.cautionPoints.filter((c): c is string => typeof c === "string")
+      : [],
+    evidenceReviewIds: Array.isArray(obj.evidenceReviewIds)
+      ? obj.evidenceReviewIds.filter((id): id is string => typeof id === "string")
+      : [],
+  };
+}
+```
+
+부분 복구 전략은 선택입니다. `summary`와 `pros`가 있으면 최소한의 요약 카드를 보여줄 수 있습니다. `recommendedFor`가 없어도 장단점은 표시됩니다.
+
+완전히 복구가 안 되면 `AiParseError`를 던져 Route Handler에서 적절한 에러 응답을 반환합니다.
+
+---
+
+## 이 구조가 UX에 주는 영향
+
+structured output이 있으면 UI 설계 자유도가 완전히 달라집니다.
+
+**장점 카드와 단점 카드 분리.** `pros`와 `cons`가 배열로 오면 각각 다른 스타일의 카드로 렌더링할 수 있습니다. 장점은 초록색, 단점은 주황색처럼 시각적 구분이 가능합니다.
+
+**추천 대상 태그.** `recommendedFor`가 문자열 배열이면 `<Tag>` 컴포넌트로 바로 매핑됩니다. "가족 여행에 적합합니다"라는 문단보다 훨씬 스캔하기 좋습니다.
+
+**근거 리뷰 강조.** `evidenceReviewIds`가 있으면 요약 아래 리뷰 목록에서 해당 리뷰를 하이라이트할 수 있습니다. "AI가 이 리뷰를 근거로 요약했습니다"라는 신뢰성 신호를 줄 수 있습니다.
+
+자유 텍스트로는 이 중 어느 것도 구현할 수 없습니다.
+
+---
+
+## 프롬프트 설계
+
+structured output을 강제하더라도 프롬프트가 명확해야 각 필드에 좋은 내용이 들어옵니다.
+
+```ts
+function buildSystemPrompt(hotelName: string, question?: string): string {
+  const questionGuide = question
+    ? `사용자가 특히 "${question}"에 대해 알고 싶어 합니다. pros와 cons에서 이 관점을 우선적으로 반영해주세요.`
+    : "일반적인 숙박 경험을 기준으로 요약해주세요.";
+
+  return `당신은 숙소 예약을 돕는 리뷰 분석 전문가입니다.
+제공된 리뷰를 분석하여 예약 의사결정에 도움이 되는 구조화된 요약을 생성하세요.
+
+숙소: ${hotelName}
+${questionGuide}
+
+지침:
+- pros: 여러 리뷰에서 반복적으로 언급된 장점만 포함 (최대 5개)
+- cons: 솔직하게 작성 (없으면 빈 배열)
+- recommendedFor: 구체적인 여행자 유형 (예: "비즈니스 출장자", "어린아이 동반 가족")
+- cautionPoints: 예약 전 알아야 할 주의사항 (없으면 빈 배열)
+- evidenceReviewIds: 요약의 근거가 된 리뷰 id 목록`;
+}
+```
+
+---
+
+## 정리
+
+LLM 응답을 파싱하는 코드는 쓰지 않는 것이 최선입니다. 응답 형태를 API 수준에서 강제하면, 파싱 코드 대신 검증 코드만 씁니다.
+
+Zod schema로 응답 형태를 정의하고, `zodToJsonSchema`로 JSON schema를 만들어 `response_format`에 넘기면 됩니다. LLM은 schema에 맞는 JSON을 반환합니다.
+
+schema mismatch는 여전히 일어날 수 있습니다. 부분 복구를 시도하고, 복구가 안 되면 명확한 에러를 던져 Route Handler가 처리하게 합니다. 조용히 이상한 결과를 반환하는 것보다 명확한 실패가 낫습니다.
