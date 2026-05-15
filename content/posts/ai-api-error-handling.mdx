@@ -1,0 +1,278 @@
+---
+title: "AI API는 일반 API와 실패 방식이 다르다 — 에러 코드 설계"
+date: "2026-05-15"
+category: "ai"
+excerpt: "timeout, rate limit, schema parse error까지 — AI API 특유의 실패 유형을 분류하고 표준화된 에러 응답 포맷을 설계한 경험을 공유합니다."
+tags: ["AI", "에러 처리", "API 설계", "Next.js", "UX"]
+readingTime: 5
+---
+
+## 에러 처리를 후순위로 뒀을 때
+
+리뷰 AI 요약 기능을 처음 배포했을 때, 에러 처리는 대충 해뒀습니다. LLM 호출이 실패하면 "요약 생성에 실패했습니다"라는 문구 하나를 보여줬습니다.
+
+그런데 실패 유형이 달랐습니다. OpenAI 서버 장애로 실패하는 경우와, 우리 서버에서 rate limit을 초과해서 실패하는 경우와, LLM 응답 파싱이 실패하는 경우는 사용자에게 전혀 다른 메시지가 필요합니다.
+
+또 다른 문제는 로그였습니다. "요약 생성에 실패했습니다"가 하루에 100번 찍히는 건데, 그게 LLM provider 장애인지, 우리 코드의 버그인지, 사용자의 이상한 입력 때문인지 알 수가 없었습니다.
+
+에러를 분류하지 않으면 디버깅이 불가능합니다.
+
+---
+
+## AI API 특유의 실패 유형
+
+일반 REST API는 실패 유형이 단순합니다. 네트워크 에러, 4xx 클라이언트 에러, 5xx 서버 에러. 대부분 즉시 실패합니다.
+
+AI API는 다릅니다.
+
+### Timeout
+
+LLM은 느립니다. 리뷰 50개를 요약하는 데 짧으면 3초, 길면 10초 이상 걸립니다. 네트워크 상태에 따라 더 걸리기도 합니다. Next.js Route Handler의 기본 timeout(60초)을 초과하는 경우도 있었습니다.
+
+### Rate Limit
+
+OpenAI, Anthropic 모두 분당 요청 수와 토큰 수에 제한이 있습니다. 트래픽이 몰리면 `429 Too Many Requests`가 옵니다. 이건 재시도로 해결할 수 있는 일시적 실패입니다.
+
+### LLM Provider Error
+
+LLM 서버 자체 장애입니다. `500`, `503`이 오거나, 응답이 완전히 오지 않습니다. 이건 우리가 고칠 수 없는 외부 장애입니다.
+
+### Schema Parse Error
+
+LLM이 응답을 반환했는데 예상한 형태가 아닌 경우입니다. structured output을 강제해도 이따금 발생합니다. 부분 복구를 시도했는데 실패했을 때 여기에 해당합니다.
+
+### Validation Error
+
+클라이언트가 잘못된 입력을 보냈을 때입니다. Zod 검증에서 걸립니다. 이건 LLM까지 가지 않고 바로 실패합니다.
+
+---
+
+## 에러 코드 설계
+
+각 실패 유형에 에러 코드를 할당했습니다.
+
+```ts
+// lib/ai/errors.ts
+
+export const AI_ERROR_CODES = {
+  // 입력 관련
+  VALIDATION_ERROR: "VALIDATION_ERROR",       // 요청 검증 실패
+  INVALID_JSON: "INVALID_JSON",               // 요청 body JSON 파싱 실패
+
+  // LLM 호출 관련
+  LLM_TIMEOUT: "LLM_TIMEOUT",               // LLM 응답 timeout
+  LLM_RATE_LIMIT: "LLM_RATE_LIMIT",         // LLM rate limit 초과
+  LLM_PROVIDER_ERROR: "LLM_PROVIDER_ERROR", // LLM 서버 에러
+  LLM_PARSE_ERROR: "LLM_PARSE_ERROR",       // 응답 schema mismatch
+
+  // 서버 관련
+  INTERNAL_ERROR: "INTERNAL_ERROR",          // 예상치 못한 에러
+} as const;
+
+export type AiErrorCode = (typeof AI_ERROR_CODES)[keyof typeof AI_ERROR_CODES];
+
+// 에러 응답 타입
+export interface AiErrorResponse {
+  ok: false;
+  code: AiErrorCode;
+  message: string;        // 사용자에게 보여줄 메시지
+  retryable: boolean;     // 프론트엔드가 재시도 버튼을 보여줄지 결정
+}
+
+// 커스텀 에러 클래스
+export class AiError extends Error {
+  constructor(
+    public code: AiErrorCode,
+    message: string,
+    public cause?: unknown
+  ) {
+    super(message);
+    this.name = "AiError";
+  }
+}
+
+export class AiParseError extends AiError {
+  constructor(message: string, public rawResponse: string) {
+    super(AI_ERROR_CODES.LLM_PARSE_ERROR, message);
+    this.name = "AiParseError";
+  }
+}
+```
+
+`retryable` 필드가 중요합니다. 클라이언트가 에러 코드를 보고 "재시도" 버튼을 보여줄지 결정할 수 있습니다. `LLM_RATE_LIMIT`이나 `LLM_TIMEOUT`은 재시도가 의미 있지만, `VALIDATION_ERROR`나 `LLM_PARSE_ERROR`는 재시도해도 같은 결과가 나옵니다.
+
+---
+
+## Route Handler에서 에러 분류
+
+LLM 호출에서 발생하는 에러를 분류하는 로직입니다.
+
+```ts
+// lib/ai/review-summary.ts
+
+import OpenAI from "openai";
+import { AiError, AI_ERROR_CODES } from "./errors";
+
+export async function generateReviewSummary(
+  input: ReviewSummaryRequest
+): Promise<ReviewSummaryResponse> {
+  try {
+    const completion = await Promise.race([
+      callLLM(input),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new AiError(AI_ERROR_CODES.LLM_TIMEOUT, "LLM 응답 시간을 초과했습니다.")), 30_000)
+      ),
+    ]);
+
+    return parseAndValidate(completion);
+  } catch (error) {
+    if (error instanceof AiError) throw error;
+
+    // OpenAI SDK 에러 분류
+    if (error instanceof OpenAI.APIError) {
+      if (error.status === 429) {
+        throw new AiError(
+          AI_ERROR_CODES.LLM_RATE_LIMIT,
+          "요약 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.",
+          error
+        );
+      }
+      if (error.status >= 500) {
+        throw new AiError(
+          AI_ERROR_CODES.LLM_PROVIDER_ERROR,
+          "AI 서비스가 일시적으로 응답하지 않습니다.",
+          error
+        );
+      }
+    }
+
+    throw new AiError(AI_ERROR_CODES.INTERNAL_ERROR, "알 수 없는 오류가 발생했습니다.", error);
+  }
+}
+```
+
+`Promise.race`로 30초 timeout을 구현했습니다. Next.js Route Handler의 기본 timeout과 별도로, LLM 호출 자체에 명시적인 제한을 걸었습니다.
+
+Route Handler에서는 이 에러를 받아 적절한 HTTP 상태 코드와 함께 응답합니다.
+
+```ts
+// app/api/ai/review-summary/route.ts
+
+import { AiError, AI_ERROR_CODES } from "@/lib/ai/errors";
+
+function errorToResponse(error: unknown): Response {
+  if (error instanceof AiError) {
+    const statusMap: Record<string, number> = {
+      [AI_ERROR_CODES.VALIDATION_ERROR]: 400,
+      [AI_ERROR_CODES.INVALID_JSON]: 400,
+      [AI_ERROR_CODES.LLM_TIMEOUT]: 504,
+      [AI_ERROR_CODES.LLM_RATE_LIMIT]: 429,
+      [AI_ERROR_CODES.LLM_PROVIDER_ERROR]: 502,
+      [AI_ERROR_CODES.LLM_PARSE_ERROR]: 502,
+      [AI_ERROR_CODES.INTERNAL_ERROR]: 500,
+    };
+
+    const retryableErrors = new Set([
+      AI_ERROR_CODES.LLM_TIMEOUT,
+      AI_ERROR_CODES.LLM_RATE_LIMIT,
+      AI_ERROR_CODES.LLM_PROVIDER_ERROR,
+    ]);
+
+    return NextResponse.json(
+      {
+        ok: false,
+        code: error.code,
+        message: error.message,
+        retryable: retryableErrors.has(error.code),
+      },
+      { status: statusMap[error.code] ?? 500 }
+    );
+  }
+
+  // 예상치 못한 에러
+  console.error("[AI] Unexpected error:", error);
+  return NextResponse.json(
+    {
+      ok: false,
+      code: AI_ERROR_CODES.INTERNAL_ERROR,
+      message: "요약 생성 중 오류가 발생했습니다.",
+      retryable: false,
+    },
+    { status: 500 }
+  );
+}
+```
+
+---
+
+## 사용자 메시지 vs 개발자 로그 분리
+
+에러 응답의 `message`는 사용자에게 보여주는 문구입니다. 개발자가 디버깅에 필요한 정보는 서버 로그에만 남깁니다.
+
+```ts
+// lib/ai/review-summary.ts (LLM 호출 실패 시)
+
+if (error instanceof OpenAI.APIError && error.status >= 500) {
+  // 로그에는 상세 정보 기록
+  console.error("[AI] OpenAI provider error", {
+    status: error.status,
+    message: error.message,
+    headers: error.headers,        // rate limit 헤더 등
+    hotelName: input.hotelName,
+    reviewCount: input.reviews.length,
+    timestamp: new Date().toISOString(),
+  });
+
+  // 사용자에게는 간결한 메시지
+  throw new AiError(
+    AI_ERROR_CODES.LLM_PROVIDER_ERROR,
+    "AI 서비스가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해주세요."
+  );
+}
+```
+
+"OpenAI 503: Service Unavailable at https://api.openai.com/v1/chat/completions"를 사용자에게 보여주면 안 됩니다. 사용자는 이 정보로 아무것도 할 수 없고, 불필요한 불안감만 생깁니다.
+
+---
+
+## 클라이언트에서 에러 코드 처리
+
+```tsx
+// app/components/review/ReviewSummaryPanel.tsx
+
+function getErrorMessage(code: string, defaultMessage: string): string {
+  const messages: Record<string, string> = {
+    LLM_TIMEOUT: "요약에 시간이 너무 오래 걸렸습니다. 잠시 후 다시 시도해주세요.",
+    LLM_RATE_LIMIT: "요청이 많아 잠시 대기 중입니다. 1분 후 다시 시도해주세요.",
+    LLM_PROVIDER_ERROR: "AI 서비스가 일시적으로 중단됐습니다. 잠시 후 다시 시도해주세요.",
+    LLM_PARSE_ERROR: "AI가 요약을 생성하지 못했습니다. 페이지를 새로고침해주세요.",
+    VALIDATION_ERROR: "리뷰 데이터를 불러오지 못했습니다. 페이지를 새로고침해주세요.",
+  };
+
+  return messages[code] ?? defaultMessage;
+}
+
+// 에러 상태 처리
+if (error) {
+  return (
+    <div className="error-state">
+      <p>{getErrorMessage(error.code, error.message)}</p>
+      {error.retryable && (
+        <button onClick={handleRetry}>다시 시도</button>
+      )}
+    </div>
+  );
+}
+```
+
+`retryable` 플래그를 활용해 "다시 시도" 버튼을 조건부로 보여줍니다. `LLM_PARSE_ERROR`에 "다시 시도" 버튼이 뜨면 사용자는 계속 눌러도 같은 에러를 만납니다. 의미 없는 버튼은 안 보여주는 게 낫습니다.
+
+---
+
+## 정리
+
+AI API 에러 처리의 핵심은 **분류**입니다. 모든 실패를 하나의 에러로 뭉개면 디버깅도, 사용자 경험 개선도 불가능합니다.
+
+에러 코드를 정의하고, 각 코드에 HTTP 상태 코드와 재시도 가능 여부를 매핑하고, 사용자 메시지와 개발자 로그를 분리합니다. 이 세 가지가 갖춰지면 AI 기능의 에러 처리는 일반 API와 비슷한 수준으로 통제 가능해집니다.
+
+AI API가 "특별히 다루기 어렵다"는 인식은 대부분 에러 분류를 제대로 하지 않아서 생깁니다.
