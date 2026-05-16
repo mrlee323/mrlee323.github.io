@@ -1,0 +1,391 @@
+---
+title: "AI 응답 데이터를 예약 의사결정 UI로 만드는 방법"
+date: "2026-05-16"
+category: "react"
+excerpt: "structured output이 있으면 AI 요약 UI가 어떻게 달라지는지, 장점 카드부터 skeleton UI까지 예약 의사결정을 돕는 컴포넌트 설계를 공유합니다."
+tags: ["React", "AI UI", "컴포넌트 설계", "UX", "TypeScript"]
+readingTime: 5
+---
+
+## UI를 만들기 전 질문
+
+structured output 설계가 끝나고 UI를 만들기 시작했습니다. 그런데 컴포넌트를 바로 짜기 전에 질문을 하나 했습니다. "이 UI가 사용자에게 어떤 결정을 도와야 하는가?"
+
+AI 요약은 "이 숙소를 예약할지 말지"를 결정하는 데 도움이 되어야 합니다. 그러면 사용자가 가장 먼저 알고 싶은 건 "이 숙소가 나에게 맞는가"입니다.
+
+긴 요약 문단은 이 질문에 잘 답하지 못합니다. 읽어야 할 것들이 너무 많습니다. 장점 3개를 시각적으로 뽑아주고, "어린이 동반 가족에게 적합합니다"라는 태그 하나가 더 빠른 결정을 돕습니다.
+
+컴포넌트 구조도 이 관점에서 설계했습니다.
+
+---
+
+## 컴포넌트 구조
+
+```
+ReviewSummaryPanel          ← 상태 관리, LLM 호출
+├── ReviewSummaryCard       ← 결과 렌더링
+│   ├── SummaryText         ← 전체 요약 한 줄
+│   ├── ProsConsList        ← 장점/단점 카드
+│   ├── RecommendedForTags  ← 추천 대상 태그
+│   ├── CautionPointsList   ← 주의사항
+│   └── EvidenceReviews     ← 근거 리뷰 강조
+└── ReviewSummarySkeleton   ← 로딩 상태
+```
+
+`ReviewSummaryPanel`은 상태를 관리합니다. 로딩, 에러, 결과 세 가지 상태만 가집니다. 결과가 있으면 `ReviewSummaryCard`에 props로 넘기고, 로딩 중이면 `ReviewSummarySkeleton`을 보여줍니다.
+
+`ReviewSummaryCard`는 순수 렌더링 컴포넌트입니다. 데이터를 받아 표시하기만 합니다. LLM이 어떻게 불렸는지, 에러가 났는지 모릅니다.
+
+---
+
+## ReviewSummaryCard 구현
+
+```tsx
+// app/components/review/ReviewSummaryCard.tsx
+
+import type { ReviewSummaryResponse } from "@/lib/ai/schemas";
+
+interface Props {
+  data: ReviewSummaryResponse;
+  allReviews: Review[];          // 근거 리뷰 강조를 위해
+}
+
+export function ReviewSummaryCard({ data, allReviews }: Props) {
+  const evidenceReviews = allReviews.filter((r) =>
+    data.evidenceReviewIds.includes(r.id)
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* 전체 요약 */}
+      <SummaryText text={data.summary} />
+
+      {/* 장점 / 단점 */}
+      <div className="grid grid-cols-2 gap-4">
+        <ProsConsList type="pros" items={data.pros} />
+        <ProsConsList type="cons" items={data.cons} />
+      </div>
+
+      {/* 추천 대상 태그 */}
+      {data.recommendedFor.length > 0 && (
+        <RecommendedForTags tags={data.recommendedFor} />
+      )}
+
+      {/* 주의사항 */}
+      {data.cautionPoints.length > 0 && (
+        <CautionPointsList points={data.cautionPoints} />
+      )}
+
+      {/* 근거 리뷰 */}
+      {evidenceReviews.length > 0 && (
+        <EvidenceReviews reviews={evidenceReviews} />
+      )}
+    </div>
+  );
+}
+```
+
+각 하위 컴포넌트가 하나의 데이터 필드를 담당합니다. `data.pros`는 `ProsConsList`만 알고 있습니다.
+
+---
+
+## ProsConsList: 장점과 단점 카드
+
+```tsx
+// app/components/review/ProsConsList.tsx
+
+interface Props {
+  type: "pros" | "cons";
+  items: string[];
+}
+
+const config = {
+  pros: {
+    label: "장점",
+    icon: "✓",
+    containerClass: "bg-emerald-50 border border-emerald-200",
+    iconClass: "text-emerald-600",
+    labelClass: "text-emerald-700",
+  },
+  cons: {
+    label: "단점",
+    icon: "!",
+    containerClass: "bg-amber-50 border border-amber-200",
+    iconClass: "text-amber-600",
+    labelClass: "text-amber-700",
+  },
+} as const;
+
+export function ProsConsList({ type, items }: Props) {
+  const { label, icon, containerClass, iconClass, labelClass } = config[type];
+
+  if (items.length === 0) {
+    return (
+      <div className={`rounded-lg p-4 ${containerClass}`}>
+        <p className={`text-sm font-semibold mb-2 ${labelClass}`}>{label}</p>
+        <p className="text-sm text-gray-400">
+          {type === "cons" ? "특별한 단점이 언급되지 않았습니다." : "장점 정보 없음"}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`rounded-lg p-4 ${containerClass}`}>
+      <p className={`text-sm font-semibold mb-3 ${labelClass}`}>{label}</p>
+      <ul className="space-y-2">
+        {items.map((item, idx) => (
+          <li key={idx} className="flex items-start gap-2 text-sm text-gray-700">
+            <span className={`mt-0.5 font-bold flex-shrink-0 ${iconClass}`}>{icon}</span>
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+빈 배열 처리를 명시적으로 했습니다. `cons`가 비어 있으면 "특별한 단점이 언급되지 않았습니다"를 보여줍니다. 아무것도 표시하지 않으면 레이아웃이 비대칭이 되고, 사용자는 "단점 정보가 로딩 안 됐나?" 하고 혼동합니다.
+
+---
+
+## RecommendedForTags: 추천 대상
+
+```tsx
+// app/components/review/RecommendedForTags.tsx
+
+interface Props {
+  tags: string[];
+}
+
+export function RecommendedForTags({ tags }: Props) {
+  return (
+    <div>
+      <p className="text-sm font-semibold text-gray-600 mb-2">이런 분께 추천</p>
+      <div className="flex flex-wrap gap-2">
+        {tags.map((tag) => (
+          <span
+            key={tag}
+            className="inline-flex items-center px-3 py-1 rounded-full text-sm bg-blue-100 text-blue-700"
+          >
+            {tag}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+태그는 한 눈에 스캔할 수 있습니다. "가족 여행", "조용한 휴식"이라는 태그를 보고 본인과 맞지 않으면 빠르게 다른 숙소를 탐색합니다. 이게 긴 문단보다 예약 퍼널에 더 도움이 됩니다.
+
+---
+
+## Skeleton UI: 로딩 상태
+
+LLM은 느립니다. 3~8초 동안 화면이 비어 있으면 사용자는 뭔가 잘못됐다고 생각합니다. Skeleton UI는 콘텐츠가 로딩 중임을 시각적으로 알려줍니다.
+
+```tsx
+// app/components/review/ReviewSummarySkeleton.tsx
+
+export function ReviewSummarySkeleton() {
+  return (
+    <div className="space-y-6 animate-pulse">
+      {/* Summary text skeleton */}
+      <div className="space-y-2">
+        <div className="h-4 bg-gray-200 rounded w-full" />
+        <div className="h-4 bg-gray-200 rounded w-3/4" />
+      </div>
+
+      {/* Pros / Cons skeleton */}
+      <div className="grid grid-cols-2 gap-4">
+        {[0, 1].map((i) => (
+          <div key={i} className="rounded-lg border border-gray-200 p-4 space-y-2">
+            <div className="h-3 bg-gray-200 rounded w-1/4" />
+            <div className="h-3 bg-gray-200 rounded w-full" />
+            <div className="h-3 bg-gray-200 rounded w-5/6" />
+            <div className="h-3 bg-gray-200 rounded w-4/6" />
+          </div>
+        ))}
+      </div>
+
+      {/* Tags skeleton */}
+      <div className="flex gap-2">
+        {[80, 100, 72].map((w) => (
+          <div key={w} className={`h-7 bg-gray-200 rounded-full`} style={{ width: w }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+Skeleton의 모양이 실제 결과와 비슷할수록 좋습니다. 위 코드에서 2열 그리드 skeleton은 실제 ProsConsList의 2열 레이아웃과 대응합니다. 로딩이 끝났을 때 레이아웃이 크게 바뀌지 않아 덜 어색합니다.
+
+---
+
+## ReviewSummaryPanel: 상태 조합
+
+```tsx
+// app/components/review/ReviewSummaryPanel.tsx
+
+"use client";
+
+import { useState } from "react";
+import { fetchReviewSummary } from "@/lib/api/review-summary";
+import { ReviewSummaryCard } from "./ReviewSummaryCard";
+import { ReviewSummarySkeleton } from "./ReviewSummarySkeleton";
+import type { ReviewSummaryResponse } from "@/lib/ai/schemas";
+import type { Review } from "@/types";
+
+interface Props {
+  hotelName: string;
+  reviews: Review[];
+}
+
+interface SummaryState {
+  status: "idle" | "loading" | "success" | "error";
+  data: ReviewSummaryResponse | null;
+  error: { code: string; message: string; retryable: boolean } | null;
+}
+
+export function ReviewSummaryPanel({ hotelName, reviews }: Props) {
+  const [state, setState] = useState<SummaryState>({
+    status: "idle",
+    data: null,
+    error: null,
+  });
+
+  const handleGenerateSummary = async () => {
+    setState({ status: "loading", data: null, error: null });
+
+    try {
+      const result = await fetchReviewSummary({
+        hotelName,
+        reviews: reviews
+          .filter((r) => r.rating >= 3)
+          .slice(0, 50)
+          .map(({ id, content, rating }) => ({ id, content, rating })),
+      });
+
+      setState({ status: "success", data: result, error: null });
+    } catch (e) {
+      const err = e as any;
+      setState({
+        status: "error",
+        data: null,
+        error: {
+          code: err.code ?? "INTERNAL_ERROR",
+          message: err.message ?? "요약 생성에 실패했습니다.",
+          retryable: err.retryable ?? false,
+        },
+      });
+    }
+  };
+
+  // idle: 시작 전
+  if (state.status === "idle") {
+    return (
+      <div className="text-center py-8">
+        <p className="text-gray-500 text-sm mb-4">
+          리뷰 {Math.min(reviews.length, 50)}개를 AI가 분석합니다
+        </p>
+        <button
+          onClick={handleGenerateSummary}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
+        >
+          AI 요약 보기
+        </button>
+      </div>
+    );
+  }
+
+  // loading: 요청 중
+  if (state.status === "loading") {
+    return (
+      <div>
+        <p className="text-sm text-gray-400 mb-4">AI가 리뷰를 분석하고 있습니다...</p>
+        <ReviewSummarySkeleton />
+      </div>
+    );
+  }
+
+  // error: 실패
+  if (state.status === "error" && state.error) {
+    return (
+      <div className="text-center py-8">
+        <p className="text-sm text-red-500 mb-3">{state.error.message}</p>
+        {state.error.retryable && (
+          <button
+            onClick={handleGenerateSummary}
+            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200"
+          >
+            다시 시도
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // success: 결과 표시
+  if (state.status === "success" && state.data) {
+    return <ReviewSummaryCard data={state.data} allReviews={reviews} />;
+  }
+
+  return null;
+}
+```
+
+`status` 필드로 네 가지 상태를 명확히 구분했습니다. `boolean` 두 개(`isLoading`, `isError`)를 쓰면 `isLoading && isError`처럼 불가능한 조합이 생깁니다. 단일 `status` 필드로 관리하면 상태가 명확하게 분리됩니다.
+
+---
+
+## EvidenceReviews: 신뢰성 신호
+
+AI 요약에서 가장 중요한 신뢰성 문제가 있습니다. "AI가 이걸 지어낸 건 아닌가?"라는 의심입니다.
+
+근거 리뷰를 보여주면 이 의심을 줄일 수 있습니다.
+
+```tsx
+// app/components/review/EvidenceReviews.tsx
+
+interface Props {
+  reviews: Review[];
+}
+
+export function EvidenceReviews({ reviews }: Props) {
+  return (
+    <div>
+      <p className="text-xs text-gray-400 mb-3">AI 분석에 사용된 리뷰</p>
+      <div className="space-y-3">
+        {reviews.slice(0, 3).map((review) => (
+          <div
+            key={review.id}
+            className="text-sm text-gray-600 border-l-2 border-blue-200 pl-3 py-1"
+          >
+            <div className="flex items-center gap-1 mb-1">
+              {Array.from({ length: review.rating }).map((_, i) => (
+                <span key={i} className="text-yellow-400 text-xs">★</span>
+              ))}
+            </div>
+            <p className="line-clamp-2">{review.content}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+최대 3개만 보여줍니다. 너무 많은 근거 리뷰는 오히려 UI를 복잡하게 만듭니다. 핵심 3개로 충분합니다.
+
+---
+
+## 정리
+
+structured output이 있으면 AI 결과를 "읽는" UI가 아니라 "스캔하는" UI를 만들 수 있습니다. 배열 데이터는 목록으로, 카테고리 데이터는 태그로, 텍스트는 짧게 잘라 카드로 — 사용자의 시선이 필요한 정보로 빠르게 이동합니다.
+
+Skeleton UI는 LLM의 느린 응답 시간을 체감적으로 짧게 만듭니다. 빈 화면보다 skeleton이 있는 화면이 사용자를 더 오래 기다리게 합니다.
+
+AI 기능 UI의 핵심은 "AI가 만든 결과"를 보여주는 것이 아니라, "사용자의 결정을 돕는 것"입니다. 이 관점이 컴포넌트 구조와 빈 상태 처리, 근거 리뷰 표시까지 모든 결정을 이끌었습니다.
