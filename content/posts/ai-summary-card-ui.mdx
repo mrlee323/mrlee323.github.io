@@ -1,391 +1,190 @@
 ---
-title: "AI 응답 데이터를 예약 의사결정 UI로 만드는 방법"
+title: "AI 결과 UI를 설계할 때 실제로 고민한 것들"
 date: "2026-05-16"
 category: "react"
-excerpt: "structured output이 있으면 AI 요약 UI가 어떻게 달라지는지, 장점 카드부터 skeleton UI까지 예약 의사결정을 돕는 컴포넌트 설계를 공유합니다."
-tags: ["React", "AI UI", "컴포넌트 설계", "UX", "TypeScript"]
-readingTime: 5
+excerpt: "structured output이 있을 때 AI UI 설계가 어떻게 달라지는지, 컴포넌트 분해 기준부터 신뢰 문제까지 — 실제로 만들면서 바꾼 결정들을 공유합니다."
+tags: ["React", "AI UI", "컴포넌트 설계", "TypeScript", "UX"]
+readingTime: 7
 ---
 
-## UI를 만들기 전 질문
+## 먼저 결론
 
-structured output 설계가 끝나고 UI를 만들기 시작했습니다. 그런데 컴포넌트를 바로 짜기 전에 질문을 하나 했습니다. "이 UI가 사용자에게 어떤 결정을 도와야 하는가?"
-
-AI 요약은 "이 숙소를 예약할지 말지"를 결정하는 데 도움이 되어야 합니다. 그러면 사용자가 가장 먼저 알고 싶은 건 "이 숙소가 나에게 맞는가"입니다.
-
-긴 요약 문단은 이 질문에 잘 답하지 못합니다. 읽어야 할 것들이 너무 많습니다. 장점 3개를 시각적으로 뽑아주고, "어린이 동반 가족에게 적합합니다"라는 태그 하나가 더 빠른 결정을 돕습니다.
-
-컴포넌트 구조도 이 관점에서 설계했습니다.
+structured output이 있으면 AI 결과를 "읽는 UI"가 아니라 "스캔하는 UI"로 만들 수 있다. 이게 핵심이다. 나머지 결정은 전부 이 한 줄에서 파생된다.
 
 ---
 
-## 컴포넌트 구조
+## 컴포넌트를 어떻게 나눌 것인가
+
+처음엔 `ReviewSummaryCard` 하나에 다 때려박았다. 그러다 LLM 스키마를 한 필드만 바꿨을 때 카드 전체가 흔들리는 걸 보고 나눴다.
+
+분해 기준은 단순하다. **무엇이 변하고 무엇이 안 변하는가**.
+
+- 장점/단점의 시각적 표현 방식 → 바뀔 수 있다 (아이콘, 색상, 레이아웃)
+- 추천 대상 태그의 렌더링 → 바뀔 수 있다
+- 근거 리뷰를 보여줄지 여부 → 제품 판단에 따라 바뀐다
+- 상태 관리(loading/error/success) → 변경 이유가 다르다
+
+변경 이유가 다르면 다른 컴포넌트다. SRP를 "단일 책임"이 아니라 "단일 변경 이유"로 읽으면 분해 기준이 명확해진다.
 
 ```
 ReviewSummaryPanel          ← 상태 관리, LLM 호출
-├── ReviewSummaryCard       ← 결과 렌더링
-│   ├── SummaryText         ← 전체 요약 한 줄
-│   ├── ProsConsList        ← 장점/단점 카드
-│   ├── RecommendedForTags  ← 추천 대상 태그
-│   ├── CautionPointsList   ← 주의사항
-│   └── EvidenceReviews     ← 근거 리뷰 강조
-└── ReviewSummarySkeleton   ← 로딩 상태
+├── ReviewSummaryCard       ← 결과 렌더링 (순수)
+│   ├── SummaryText
+│   ├── ProsConsList
+│   ├── RecommendedForTags
+│   ├── CautionPointsList
+│   └── EvidenceReviews
+└── ReviewSummarySkeleton
 ```
 
-`ReviewSummaryPanel`은 상태를 관리합니다. 로딩, 에러, 결과 세 가지 상태만 가집니다. 결과가 있으면 `ReviewSummaryCard`에 props로 넘기고, 로딩 중이면 `ReviewSummarySkeleton`을 보여줍니다.
-
-`ReviewSummaryCard`는 순수 렌더링 컴포넌트입니다. 데이터를 받아 표시하기만 합니다. LLM이 어떻게 불렸는지, 에러가 났는지 모릅니다.
+`ReviewSummaryCard`는 `ReviewSummaryResponse` 타입을 그대로 받는다. LLM이 어떻게 호출됐는지, 에러가 났는지 모른다. 이걸 지키는 게 나중에 테스트를 쉽게 만든다.
 
 ---
 
-## ReviewSummaryCard 구현
+## structured output이 있을 때 UI 설계가 어떻게 달라지는가
 
-```tsx
-// app/components/review/ReviewSummaryCard.tsx
+없을 때와 비교하면 차이가 크다.
 
-import type { ReviewSummaryResponse } from "@/lib/ai/schemas";
+structured output 없이 LLM 응답이 긴 텍스트 하나라면, UI는 그걸 그대로 보여주는 것밖에 못 한다. 마크다운 파싱 정도가 전부다. 데이터의 구조가 없으니 구조적인 표현도 없다.
 
-interface Props {
-  data: ReviewSummaryResponse;
-  allReviews: Review[];          // 근거 리뷰 강조를 위해
-}
+structured output이 있으면 응답이 타입이 된다.
 
-export function ReviewSummaryCard({ data, allReviews }: Props) {
-  const evidenceReviews = allReviews.filter((r) =>
-    data.evidenceReviewIds.includes(r.id)
-  );
-
-  return (
-    <div className="space-y-6">
-      {/* 전체 요약 */}
-      <SummaryText text={data.summary} />
-
-      {/* 장점 / 단점 */}
-      <div className="grid grid-cols-2 gap-4">
-        <ProsConsList type="pros" items={data.pros} />
-        <ProsConsList type="cons" items={data.cons} />
-      </div>
-
-      {/* 추천 대상 태그 */}
-      {data.recommendedFor.length > 0 && (
-        <RecommendedForTags tags={data.recommendedFor} />
-      )}
-
-      {/* 주의사항 */}
-      {data.cautionPoints.length > 0 && (
-        <CautionPointsList points={data.cautionPoints} />
-      )}
-
-      {/* 근거 리뷰 */}
-      {evidenceReviews.length > 0 && (
-        <EvidenceReviews reviews={evidenceReviews} />
-      )}
-    </div>
-  );
+```typescript
+interface ReviewSummaryResponse {
+  summary: string;
+  pros: string[];
+  cons: string[];
+  recommendedFor: string[];
+  cautionPoints: string[];
+  evidenceReviewIds: string[];
 }
 ```
 
-각 하위 컴포넌트가 하나의 데이터 필드를 담당합니다. `data.pros`는 `ProsConsList`만 알고 있습니다.
+`pros: string[]`이면 리스트로 렌더링한다. `recommendedFor: string[]`이면 태그로 뿌린다. 배열의 의미가 스키마에 담겨 있으니 UI에서 의미를 해석할 필요가 없다.
+
+설계 순서도 달라진다. 스키마 먼저, UI 나중이다. 스키마가 확정되지 않은 상태에서 UI를 짜면 나중에 다 엎는다.
 
 ---
 
-## ProsConsList: 장점과 단점 카드
+## 상태 관리: boolean 두 개 vs 단일 status
+
+처음에 `isLoading`, `isError` 두 개로 짰다. 코드 리뷰에서 지적받기 전까지 문제를 못 느꼈다.
+
+`isLoading && isError`는 불가능한 조합인데, 타입이 그걸 막아주지 않는다. 런타임에서 어떤 분기가 실행될지 코드를 읽으면서 머릿속으로 계산해야 한다.
+
+```typescript
+// Before: 불가능한 조합이 타입상 존재
+isLoading: boolean;
+isError: boolean;
+
+// After: 가능한 상태만 존재
+status: "idle" | "loading" | "success" | "error";
+```
+
+단일 `status` 필드로 바꾸면 컴포넌트 분기가 exhaustive해진다. 새 상태가 추가되면 컴파일 타임에 잡힌다.
+
+---
+
+## LLM 응답이 스키마와 맞지 않을 때
+
+structured output을 쓴다고 해서 항상 스키마를 완벽히 따르는 건 아니다. 모델에 따라, 프롬프트에 따라 `pros`가 `null`로 오거나 배열이 아닌 문자열로 올 수 있다.
+
+이걸 UI에서 그냥 렌더링하면 깨진다.
+
+```typescript
+// pros가 null이면 .map()에서 터진다
+{data.pros.map((item) => <li>{item}</li>)}
+```
+
+두 가지 선택지가 있다.
+
+1. API 레이어에서 방어: 응답을 파싱할 때 `zod`로 검증하고, 실패하면 에러 처리
+2. 컴포넌트에서 방어: 렌더링 전에 `Array.isArray(data.pros) ? data.pros : []`
+
+나는 API 레이어에서 막는 쪽을 택했다. 컴포넌트에서 스키마 불일치를 흡수하기 시작하면 어디서 무슨 일이 일어나는지 추적이 어려워진다. 파싱 실패는 에러로 올라오게 하고, 컴포넌트는 타입을 믿는다.
+
+---
+
+## 빈 배열 처리 — 레이아웃이 깨지는 지점
+
+`cons`가 빈 배열이면 어떻게 렌더링할 것인가. 아무것도 안 보여주면 2열 그리드에서 `pros` 칸만 남는다.
 
 ```tsx
-// app/components/review/ProsConsList.tsx
+// 이렇게 하면 pros만 전체 너비를 차지하거나,
+// 아니면 빈 칸이 생겨서 레이아웃이 어색해진다
+{data.cons.length > 0 && <ProsConsList type="cons" items={data.cons} />}
+```
 
-interface Props {
-  type: "pros" | "cons";
-  items: string[];
-}
+LLM이 단점 없는 숙소를 분석했을 때 실제로 이 문제가 생겼다. `cons`가 비어서 `pros`만 렌더링됐고, 2열로 설계된 레이아웃이 1열처럼 보였다.
 
-const config = {
-  pros: {
-    label: "장점",
-    icon: "✓",
-    containerClass: "bg-emerald-50 border border-emerald-200",
-    iconClass: "text-emerald-600",
-    labelClass: "text-emerald-700",
-  },
-  cons: {
-    label: "단점",
-    icon: "!",
-    containerClass: "bg-amber-50 border border-amber-200",
-    iconClass: "text-amber-600",
-    labelClass: "text-amber-700",
-  },
-} as const;
+해결 방향도 두 가지다. 빈 상태를 보여줄 것인가, 레이아웃을 조건부로 바꿀 것인가.
 
-export function ProsConsList({ type, items }: Props) {
-  const { label, icon, containerClass, iconClass, labelClass } = config[type];
+빈 상태를 보여주기로 했다. 단점 없는 숙소라는 정보 자체가 의미 있고, 빈 칸이 있으면 사용자가 "로딩 안 됐나?" 하고 혼동한다.
 
-  if (items.length === 0) {
-    return (
-      <div className={`rounded-lg p-4 ${containerClass}`}>
-        <p className={`text-sm font-semibold mb-2 ${labelClass}`}>{label}</p>
-        <p className="text-sm text-gray-400">
-          {type === "cons" ? "특별한 단점이 언급되지 않았습니다." : "장점 정보 없음"}
-        </p>
-      </div>
-    );
-  }
-
+```tsx
+if (items.length === 0) {
   return (
     <div className={`rounded-lg p-4 ${containerClass}`}>
-      <p className={`text-sm font-semibold mb-3 ${labelClass}`}>{label}</p>
-      <ul className="space-y-2">
-        {items.map((item, idx) => (
-          <li key={idx} className="flex items-start gap-2 text-sm text-gray-700">
-            <span className={`mt-0.5 font-bold flex-shrink-0 ${iconClass}`}>{icon}</span>
-            <span>{item}</span>
-          </li>
-        ))}
-      </ul>
+      <p className={`text-sm font-semibold mb-2 ${labelClass}`}>{label}</p>
+      <p className="text-sm text-gray-400">
+        {type === "cons" ? "특별한 단점이 언급되지 않았습니다." : "장점 정보 없음"}
+      </p>
     </div>
   );
 }
 ```
 
-빈 배열 처리를 명시적으로 했습니다. `cons`가 비어 있으면 "특별한 단점이 언급되지 않았습니다"를 보여줍니다. 아무것도 표시하지 않으면 레이아웃이 비대칭이 되고, 사용자는 "단점 정보가 로딩 안 됐나?" 하고 혼동합니다.
+`cons`와 `pros`가 빈 상태일 때 메시지를 다르게 쓴 것도 의도적이다. 단점 없음은 긍정적인 신호이고, 장점 없음은 분석 실패에 가깝다.
 
 ---
 
-## RecommendedForTags: 추천 대상
+## 근거 리뷰 표시 — UX 결정이 아니라 제품 결정
+
+`EvidenceReviews`를 넣을지 말지는 UX 고민이 아니었다. AI가 생성한 결과를 사용자가 신뢰할 것인가의 문제다.
+
+예약 결정은 돈이 오가는 행위다. "AI가 이걸 지어낸 건 아닌가"라는 의심이 생기면 결국 원본 리뷰를 하나하나 읽는다. 그러면 AI 요약의 존재 이유가 없어진다.
+
+근거 리뷰를 붙이면 세 가지가 해결된다.
+
+1. "이 요약이 실제 리뷰에서 나왔다"는 확인
+2. 사용자가 더 깊이 보고 싶을 때의 진입점
+3. AI 환각이 있으면 근거 리뷰를 보고 사용자가 직접 확인 가능
+
+처음엔 5개를 보여줬는데 3개로 줄였다. 5개부터는 "리뷰 목록이 또 있네"처럼 읽힌다. 근거를 보여주는 게 목적이지, 리뷰 목록을 대체하는 게 아니다.
 
 ```tsx
-// app/components/review/RecommendedForTags.tsx
-
-interface Props {
-  tags: string[];
-}
-
-export function RecommendedForTags({ tags }: Props) {
-  return (
-    <div>
-      <p className="text-sm font-semibold text-gray-600 mb-2">이런 분께 추천</p>
-      <div className="flex flex-wrap gap-2">
-        {tags.map((tag) => (
-          <span
-            key={tag}
-            className="inline-flex items-center px-3 py-1 rounded-full text-sm bg-blue-100 text-blue-700"
-          >
-            {tag}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
+{reviews.slice(0, 3).map((review) => (
+  <div key={review.id} className="border-l-2 border-blue-200 pl-3 py-1">
+    <p className="line-clamp-2 text-sm text-gray-600">{review.content}</p>
+  </div>
+))}
 ```
 
-태그는 한 눈에 스캔할 수 있습니다. "가족 여행", "조용한 휴식"이라는 태그를 보고 본인과 맞지 않으면 빠르게 다른 숙소를 탐색합니다. 이게 긴 문단보다 예약 퍼널에 더 도움이 됩니다.
+`line-clamp-2`로 자른 것도 같은 이유다. 전체 리뷰를 여기서 읽게 하는 게 아니라, "근거가 있다"는 신호를 주는 것이다.
 
 ---
 
-## Skeleton UI: 로딩 상태
+## Skeleton: 모양이 결과와 같아야 하는 이유
 
-LLM은 느립니다. 3~8초 동안 화면이 비어 있으면 사용자는 뭔가 잘못됐다고 생각합니다. Skeleton UI는 콘텐츠가 로딩 중임을 시각적으로 알려줍니다.
+Skeleton의 레이아웃이 실제 결과 레이아웃과 다르면 로딩 완료 시 레이아웃 시프트가 생긴다. 사용자 입장에선 콘텐츠가 "갑자기 달라지는" 경험이다.
 
-```tsx
-// app/components/review/ReviewSummarySkeleton.tsx
+2열 그리드 skeleton이 실제 `ProsConsList`의 2열에 대응하고, 태그 모양 skeleton이 실제 `RecommendedForTags`에 대응한다. 이걸 유지하는 건 디자인 완성도 문제가 아니라 인지 부하 문제다.
 
-export function ReviewSummarySkeleton() {
-  return (
-    <div className="space-y-6 animate-pulse">
-      {/* Summary text skeleton */}
-      <div className="space-y-2">
-        <div className="h-4 bg-gray-200 rounded w-full" />
-        <div className="h-4 bg-gray-200 rounded w-3/4" />
-      </div>
-
-      {/* Pros / Cons skeleton */}
-      <div className="grid grid-cols-2 gap-4">
-        {[0, 1].map((i) => (
-          <div key={i} className="rounded-lg border border-gray-200 p-4 space-y-2">
-            <div className="h-3 bg-gray-200 rounded w-1/4" />
-            <div className="h-3 bg-gray-200 rounded w-full" />
-            <div className="h-3 bg-gray-200 rounded w-5/6" />
-            <div className="h-3 bg-gray-200 rounded w-4/6" />
-          </div>
-        ))}
-      </div>
-
-      {/* Tags skeleton */}
-      <div className="flex gap-2">
-        {[80, 100, 72].map((w) => (
-          <div key={w} className={`h-7 bg-gray-200 rounded-full`} style={{ width: w }} />
-        ))}
-      </div>
-    </div>
-  );
-}
-```
-
-Skeleton의 모양이 실제 결과와 비슷할수록 좋습니다. 위 코드에서 2열 그리드 skeleton은 실제 ProsConsList의 2열 레이아웃과 대응합니다. 로딩이 끝났을 때 레이아웃이 크게 바뀌지 않아 덜 어색합니다.
+Skeleton을 별도 컴포넌트로 분리한 이유도 있다. 처음엔 `ReviewSummaryPanel` 안에 인라인으로 박았는데, 실제 Card 레이아웃이 바뀔 때마다 Skeleton도 수동으로 맞춰야 했다. 분리하면 Card 레이아웃 변경과 Skeleton 변경이 같은 PR에서 묶인다.
 
 ---
 
-## ReviewSummaryPanel: 상태 조합
+## 처음 설계와 달라진 것들
 
-```tsx
-// app/components/review/ReviewSummaryPanel.tsx
-
-"use client";
-
-import { useState } from "react";
-import { fetchReviewSummary } from "@/lib/api/review-summary";
-import { ReviewSummaryCard } from "./ReviewSummaryCard";
-import { ReviewSummarySkeleton } from "./ReviewSummarySkeleton";
-import type { ReviewSummaryResponse } from "@/lib/ai/schemas";
-import type { Review } from "@/types";
-
-interface Props {
-  hotelName: string;
-  reviews: Review[];
-}
-
-interface SummaryState {
-  status: "idle" | "loading" | "success" | "error";
-  data: ReviewSummaryResponse | null;
-  error: { code: string; message: string; retryable: boolean } | null;
-}
-
-export function ReviewSummaryPanel({ hotelName, reviews }: Props) {
-  const [state, setState] = useState<SummaryState>({
-    status: "idle",
-    data: null,
-    error: null,
-  });
-
-  const handleGenerateSummary = async () => {
-    setState({ status: "loading", data: null, error: null });
-
-    try {
-      const result = await fetchReviewSummary({
-        hotelName,
-        reviews: reviews
-          .filter((r) => r.rating >= 3)
-          .slice(0, 50)
-          .map(({ id, content, rating }) => ({ id, content, rating })),
-      });
-
-      setState({ status: "success", data: result, error: null });
-    } catch (e) {
-      const err = e as any;
-      setState({
-        status: "error",
-        data: null,
-        error: {
-          code: err.code ?? "INTERNAL_ERROR",
-          message: err.message ?? "요약 생성에 실패했습니다.",
-          retryable: err.retryable ?? false,
-        },
-      });
-    }
-  };
-
-  // idle: 시작 전
-  if (state.status === "idle") {
-    return (
-      <div className="text-center py-8">
-        <p className="text-gray-500 text-sm mb-4">
-          리뷰 {Math.min(reviews.length, 50)}개를 AI가 분석합니다
-        </p>
-        <button
-          onClick={handleGenerateSummary}
-          className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"
-        >
-          AI 요약 보기
-        </button>
-      </div>
-    );
-  }
-
-  // loading: 요청 중
-  if (state.status === "loading") {
-    return (
-      <div>
-        <p className="text-sm text-gray-400 mb-4">AI가 리뷰를 분석하고 있습니다...</p>
-        <ReviewSummarySkeleton />
-      </div>
-    );
-  }
-
-  // error: 실패
-  if (state.status === "error" && state.error) {
-    return (
-      <div className="text-center py-8">
-        <p className="text-sm text-red-500 mb-3">{state.error.message}</p>
-        {state.error.retryable && (
-          <button
-            onClick={handleGenerateSummary}
-            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200"
-          >
-            다시 시도
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  // success: 결과 표시
-  if (state.status === "success" && state.data) {
-    return <ReviewSummaryCard data={state.data} allReviews={reviews} />;
-  }
-
-  return null;
-}
-```
-
-`status` 필드로 네 가지 상태를 명확히 구분했습니다. `boolean` 두 개(`isLoading`, `isError`)를 쓰면 `isLoading && isError`처럼 불가능한 조합이 생깁니다. 단일 `status` 필드로 관리하면 상태가 명확하게 분리됩니다.
+- `ReviewSummaryCard`에 `status` prop을 넘겼다가 삭제했다. Card는 성공 상태의 결과만 알면 된다. 상태 분기는 Panel 몫이다.
+- 태그 컴포넌트를 `SummaryText` 안에 넣었다가 꺼냈다. 추천 대상 태그가 요약 텍스트와 다른 이유로 바뀐다는 걸 나중에 깨달았다.
+- 에러 컴포넌트를 별도로 만들려다 Panel 인라인으로 뒀다. 에러 UI가 현재 프로젝트에서 재사용되는 경우가 없다. 추상화는 재사용이 확인될 때 한다.
+- `evidenceReviewIds`를 Card에서 필터링했다가 Panel로 올렸다. Card가 `allReviews` 배열 전체를 받는 게 부자연스러웠다. Panel이 미리 필터링해서 넘기는 게 더 명확하다.
 
 ---
 
-## EvidenceReviews: 신뢰성 신호
+## 남은 문제
 
-AI 요약에서 가장 중요한 신뢰성 문제가 있습니다. "AI가 이걸 지어낸 건 아닌가?"라는 의심입니다.
+streaming response를 쓰면 structured output을 그대로 쓸 수 없다. 응답이 부분적으로 오는 동안 JSON이 incomplete하기 때문에 파싱이 불가능하다. 이 경우 필드별로 streaming을 제어하거나, 전체 응답을 받은 뒤 파싱하거나, tool call 방식으로 우회해야 한다.
 
-근거 리뷰를 보여주면 이 의심을 줄일 수 있습니다.
-
-```tsx
-// app/components/review/EvidenceReviews.tsx
-
-interface Props {
-  reviews: Review[];
-}
-
-export function EvidenceReviews({ reviews }: Props) {
-  return (
-    <div>
-      <p className="text-xs text-gray-400 mb-3">AI 분석에 사용된 리뷰</p>
-      <div className="space-y-3">
-        {reviews.slice(0, 3).map((review) => (
-          <div
-            key={review.id}
-            className="text-sm text-gray-600 border-l-2 border-blue-200 pl-3 py-1"
-          >
-            <div className="flex items-center gap-1 mb-1">
-              {Array.from({ length: review.rating }).map((_, i) => (
-                <span key={i} className="text-yellow-400 text-xs">★</span>
-              ))}
-            </div>
-            <p className="line-clamp-2">{review.content}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-```
-
-최대 3개만 보여줍니다. 너무 많은 근거 리뷰는 오히려 UI를 복잡하게 만듭니다. 핵심 3개로 충분합니다.
-
----
-
-## 정리
-
-structured output이 있으면 AI 결과를 "읽는" UI가 아니라 "스캔하는" UI를 만들 수 있습니다. 배열 데이터는 목록으로, 카테고리 데이터는 태그로, 텍스트는 짧게 잘라 카드로 — 사용자의 시선이 필요한 정보로 빠르게 이동합니다.
-
-Skeleton UI는 LLM의 느린 응답 시간을 체감적으로 짧게 만듭니다. 빈 화면보다 skeleton이 있는 화면이 사용자를 더 오래 기다리게 합니다.
-
-AI 기능 UI의 핵심은 "AI가 만든 결과"를 보여주는 것이 아니라, "사용자의 결정을 돕는 것"입니다. 이 관점이 컴포넌트 구조와 빈 상태 처리, 근거 리뷰 표시까지 모든 결정을 이끌었습니다.
+현재는 전체 응답 후 파싱 방식이다. LLM 응답이 5초를 넘으면 streaming을 도입하는 게 낫다고 생각하지만, 아직 그 임계점에 도달하지 않았다.
