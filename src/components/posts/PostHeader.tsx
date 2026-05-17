@@ -1,6 +1,7 @@
 import type { PostFrontmatter } from '@/types';
 import { CATEGORY_MAP } from '@/lib/categories';
 import { formatDate } from '@/lib/utils';
+import { SITE_CONFIG } from '@/lib/config';
 
 interface PostHeaderProps {
   frontmatter: PostFrontmatter;
@@ -38,7 +39,7 @@ export default function PostHeader({ frontmatter }: PostHeaderProps) {
           )}
           <span className="post-meta-item">
             <i className="fa fa-user" />
-            이민이
+            {SITE_CONFIG.name}
           </span>
         </div>
       </div>
