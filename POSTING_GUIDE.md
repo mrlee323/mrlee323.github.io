@@ -314,23 +314,33 @@ git commit -m "ci: [변경 내용]"
 | 2026-05-02 | xstate-v5-wizard-ui | react |
 | 2026-05-11 | webgpu-browser-inference | ai |
 | 2026-05-16 | ai-summary-card-ui | react |
+| 2026-05-17 | nextjs-route-handler-llm | nextjs |
+| 2026-06-10 | core-web-vitals-production | react |
+| 2026-07-15 | llm-production-lessons | ai |
+| 2026-08-10 | senior-frontend-judgment | react |
 
 ---
 
-## 9. 프론트엔드가 살아남는 법 — 자동화 시리즈 (Day 1~56)
+## 9. 프론트엔드 시니어가 AI 시대를 사는 법 — 시리즈 현황
 
-Day 1 = 2026-05-16 기준. 매일 오전 9시(KST) 자동 생성.
+Day 1 = 2026-05-16. 시니어 4년차 관점에서 성능·AI·판단력을 다루는 시리즈.
+
+### Part 1 — 성능이 곧 임팩트다
 
 | Day | 날짜 | 슬러그 | 상태 |
 |-----|------|--------|------|
 | 1 | 2026-05-16 | ai-summary-card-ui | ✅ |
-| 2 | 2026-05-17 | nextjs-route-handler-llm | 🤖 |
-| 3 | 2026-05-18 | zod-ai-request-validation | 🤖 |
-| 4 | 2026-05-19 | llm-structured-output-design | 🤖 |
-| 5 | 2026-05-20 | ai-api-error-handling | 🤖 |
-| 6 | 2026-05-21 | ai-review-summary-architecture | 🤖 |
-| 7 | 2026-05-22 | ai-api-design-review | 🤖 |
-| 8 | 2026-05-23 | server-llm-api-call | 🤖 |
-| 9 | 2026-05-24 | llm-prompt-template-design | 🤖 |
-| 10 | 2026-05-25 | llm-structured-output-impl | 🤖 |
-| 11~56 | 2026-05-26~2026-07-10 | (자동 생성) | 🤖 |
+| 2 | 2026-05-17 | nextjs-route-handler-llm | ✅ |
+| 3 | 2026-06-10 | core-web-vitals-production | ✅ |
+
+### Part 2 — AI 기능을 제품에 붙이는 경험
+
+| Day | 날짜 | 슬러그 | 상태 |
+|-----|------|--------|------|
+| 4 | 2026-07-15 | llm-production-lessons | ✅ |
+
+### Part 3 — 시니어로 성장하는 판단들
+
+| Day | 날짜 | 슬러그 | 상태 |
+|-----|------|--------|------|
+| 5 | 2026-08-10 | senior-frontend-judgment | ✅ |

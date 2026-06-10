@@ -1,0 +1,105 @@
+---
+title: "Core Web Vitals를 운영에서 다루는 법"
+date: "2026-06-10"
+category: "react"
+excerpt: "Lighthouse 점수가 아니라 실제 사용자 데이터로 성능을 판단하게 된 과정. LCP·INP·CLS를 비즈니스 지표와 연결하기까지 겪은 시행착오를 정리했다."
+tags: ["Core Web Vitals", "LCP", "INP", "성능 최적화", "CrUX"]
+readingTime: 8
+---
+
+## 숫자가 맞는데 왜 느리다는 말이 나오는가
+
+Lighthouse 점수 90점. 근데 QA에서 "느리다"는 피드백이 온다. 처음엔 재현이 안 된다고 생각했다. 내 맥북에서, 크롬에서, 개발 서버에서 돌리면 빠르니까.
+
+문제는 측정 환경이었다. Lighthouse는 throttled 4G + mid-tier 모바일 기준으로 측정한다. 실제 사용자는 그보다 훨씬 다양한 환경에서 온다. 고사양 데스크톱이 30%, 보급형 안드로이드가 40%, 아이폰 중간 모델이 나머지인 서비스에서 "Lighthouse 기준" 성능은 한 시나리오의 점수일 뿐이다.
+
+CrUX(Chrome User Experience Report)를 처음 들여다봤을 때 Lighthouse 점수와 격차가 컸다. 우리 서비스의 실제 LCP p75는 Lighthouse가 보여주는 값보다 1.4배 높았다.
+
+---
+
+## LCP를 실제로 줄인 것들
+
+LCP는 무엇이 Largest Contentful Paint인지 먼저 파악하는 게 시작이다. 대부분 히어로 이미지나 헤더 텍스트인데, 의외로 CSS background-image인 경우도 있다. CSS background는 `<img>` 태그와 달리 preload hint를 자동으로 받지 못한다.
+
+우리 서비스에서 LCP 요소는 숙소 대표 이미지였다. 이미지 자체는 CDN에 있었지만 세 가지 문제가 있었다.
+
+**1. 이미지 크기가 적절하지 않았다**
+
+`srcset`을 쓰고 있었는데 실제 렌더링 크기와 가장 근접한 breakpoint 이미지가 지정되지 않아서 500px 자리에 1200px 이미지가 로드되고 있었다. `sizes` 속성을 실제 레이아웃에 맞게 다시 쓰는 것만으로 전송 크기가 60% 줄었다.
+
+**2. `fetchpriority` 가 없었다**
+
+히어로 이미지에 `fetchpriority="high"`를 추가하면 브라우저가 다른 리소스보다 먼저 이 이미지를 가져온다. Next.js `Image` 컴포넌트에서는 `priority` prop이 같은 역할을 한다. 처음 마운트에서 보이는 이미지인데도 이걸 안 쓰고 있었다.
+
+**3. TTFB가 높았다**
+
+이미지 최적화를 다 해도 LCP가 개선이 제한적이었는데, 원인은 HTML 자체의 TTFB였다. 서버에서 숙소 상세 데이터를 가져오는 API 응답이 느렸고, SSR이 그걸 기다리고 있었다. API 응답 캐싱 레이어를 붙이자 TTFB가 줄고 LCP도 따라 내려갔다.
+
+---
+
+## INP: 2024년에 바뀐 것
+
+2024년 3월, Google이 FID를 INP로 교체했다. FID는 첫 번째 인터랙션만 측정했지만, INP는 페이지 수명 동안의 모든 인터랙션 응답 시간 중 나쁜 쪽을 본다.
+
+INP 문제는 대부분 두 가지에서 온다.
+
+**Long Tasks** — 메인 스레드를 100ms 이상 점유하는 작업. 큰 목록 렌더링, 무거운 계산, 동기 처리 블로킹이 해당된다. Chrome DevTools의 Performance 탭에서 Long Task 마킹(빨간 삼각형)을 보면 어디서 막히는지 찾을 수 있다.
+
+**Rendering bottleneck** — 클릭 이벤트 핸들러 자체는 가볍지만 그 결과로 발생하는 리렌더링이 무거운 경우. `React.memo`, `useMemo`, `useCallback` 남발보다는 컴포넌트 분리나 `startTransition`이 더 실질적인 해결책인 경우가 많다.
+
+```typescript
+// 필터 변경 → 목록 리렌더가 무거울 때
+const handleFilterChange = (value: string) => {
+  // 입력 반응은 즉시
+  setInputValue(value);
+  // 무거운 목록 업데이트는 뒤로
+  startTransition(() => {
+    setFilter(value);
+  });
+};
+```
+
+`startTransition`은 "이 업데이트는 급하지 않다"는 신호다. 브라우저가 더 급한 인터랙션(클릭, 타이핑)을 먼저 처리하고 이걸 나중에 처리하게 된다.
+
+---
+
+## 성능을 비즈니스 지표로 말하는 법
+
+성능 개선을 설득할 때 "LCP가 500ms 줄었습니다"는 약하다. 의사결정자가 그 숫자의 의미를 알아야 할 이유가 없다.
+
+Google의 연구에 따르면 LCP가 0.1초 개선될 때 전환율이 1% 이상 개선된다는 데이터가 있다. 우리 서비스로 치면: 월 예약 건수, 평균 객단가, 전환율의 곱으로 성능 개선의 예상 임팩트를 숫자로 만들 수 있다.
+
+정확한 계산이 아니어도 된다. "LCP 500ms 개선 → 전환율 약 0.5~1% 개선 → 월 XX 건 추가 예약 가능성"이라는 논리 구조가 있으면 대화가 된다.
+
+더 직접적인 방법은 A/B 테스트다. 성능 개선 버전과 현재 버전을 나눠서 실제 전환율 차이를 측정하면 추정이 아닌 데이터가 된다.
+
+---
+
+## 측정 자동화 없이는 유지가 안 된다
+
+성능을 한 번 개선해도 다음 배포에서 다시 나빠지는 경우가 있다. 컴포넌트 하나 추가됐는데 번들이 갑자기 50KB 늘었거나, 이미지 로딩 순서가 바뀌거나.
+
+CI에서 Lighthouse를 돌리면 PR마다 성능 리포트가 붙는다. GitHub Actions + `treosh/lighthouse-ci-action`이 가장 빠른 셋업이다. 기준값을 넘으면 merge block도 가능하다.
+
+```yaml
+# .github/workflows/lighthouse.yml
+- uses: treosh/lighthouse-ci-action@v12
+  with:
+    urls: |
+      https://staging.example.com/property/12345
+    budgetPath: .lighthouserc.json
+    uploadArtifacts: true
+```
+
+단, CI Lighthouse는 실 사용자 데이터가 아니다. 회귀 감지 용도로 쓰고, 실 사용자 성능은 CrUX나 RUM(Real User Monitoring) 도구로 별도로 보는 것이 맞다.
+
+---
+
+## 지금 우리 팀이 보는 숫자들
+
+- **LCP p75 ≤ 2.5초** — Good 기준. p75는 "하위 75% 사용자"가 이 시간 안에 LCP를 경험했다는 뜻. 평균이 아니다.
+- **INP p75 ≤ 200ms** — Good 기준.
+- **번들 크기 예산** — 특정 라우트의 JS 번들이 200KB(gzip)를 넘으면 PR에서 경고.
+- **TTFB ≤ 800ms** — 이 이상이면 서버 쪽 문제를 먼저 본다.
+
+Core Web Vitals를 추적하는 이유는 점수를 올리는 게 아니라 느려지는 것을 빠르게 발견하는 것이다. 문제가 배포된 지 2주 후에 알아채는 것과 배포 당일에 아는 것의 차이는 크다.
