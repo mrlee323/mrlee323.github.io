@@ -28,12 +28,23 @@
   --color-code-bg: #2b2825;
   --color-code-ink: #efe9df;
 
+  /* Chrome */
+  --color-header-bg: rgba(250, 249, 245, 0.86);
+  --grain-opacity: 0.028;
+
   /* Categories — muted editorial */
   --color-react: #2e7d74;
   --color-typescript: #35618e;
   --color-nextjs: #33312d;
   --color-cssdesign: #8a5a83;
   --color-ai: #c0663d;
+
+  /* Skill accents (About) */
+  --color-skill-react: #2e7d74;
+  --color-skill-typescript: #35618e;
+  --color-skill-nextjs: #33312d;
+  --color-skill-cssdesign: #8a5a83;
+  --color-skill-backend: #5c7a4a;
 
   --font-body: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'JetBrains Mono', 'SFMono-Regular', monospace;
@@ -44,6 +55,94 @@
   --radius-lg: 4px;
 
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* ------------------------------------------------------------
+   Dark theme — warm, not the usual cold navy.
+   @theme 토큰은 @layer 안에 들어가므로 레이어 밖 규칙이 항상 이긴다.
+   ------------------------------------------------------------ */
+:root {
+  color-scheme: light;
+}
+
+/* 명시적으로 다크를 고른 경우 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-paper: #1a1815;
+  --color-paper-deep: #211e19;
+  --color-paper-warm: #2b2721;
+  --color-paper-raised: #211e19;
+
+  --color-ink: #ece7dd;
+  --color-ink-soft: #b2aa9c;
+  --color-ink-faint: #857e71;
+
+  --color-rule: #322e27;
+  --color-rule-strong: #4c453b;
+
+  --color-clay: #e08a63;
+  --color-clay-deep: #f0a480;
+  --color-clay-wash: #2e2620;
+
+  --color-code-bg: #121110;
+  --color-code-ink: #e8e2d7;
+
+  --color-header-bg: rgba(26, 24, 21, 0.86);
+  --grain-opacity: 0.05;
+
+  --color-react: #5fb3a6;
+  --color-typescript: #7aa8d4;
+  --color-nextjs: #d6d0c4;
+  --color-cssdesign: #c091b8;
+  --color-ai: #e0946a;
+
+  --color-skill-react: #5fb3a6;
+  --color-skill-typescript: #7aa8d4;
+  --color-skill-nextjs: #d6d0c4;
+  --color-skill-cssdesign: #c091b8;
+  --color-skill-backend: #96b47e;
+}
+
+/* 아무것도 고르지 않았으면 시스템 설정을 따른다 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --color-paper: #1a1815;
+    --color-paper-deep: #211e19;
+    --color-paper-warm: #2b2721;
+    --color-paper-raised: #211e19;
+
+    --color-ink: #ece7dd;
+    --color-ink-soft: #b2aa9c;
+    --color-ink-faint: #857e71;
+
+    --color-rule: #322e27;
+    --color-rule-strong: #4c453b;
+
+    --color-clay: #e08a63;
+    --color-clay-deep: #f0a480;
+    --color-clay-wash: #2e2620;
+
+    --color-code-bg: #121110;
+    --color-code-ink: #e8e2d7;
+
+    --color-header-bg: rgba(26, 24, 21, 0.86);
+    --grain-opacity: 0.05;
+
+    --color-react: #5fb3a6;
+    --color-typescript: #7aa8d4;
+    --color-nextjs: #d6d0c4;
+    --color-cssdesign: #c091b8;
+    --color-ai: #e0946a;
+
+    --color-skill-react: #5fb3a6;
+    --color-skill-typescript: #7aa8d4;
+    --color-skill-nextjs: #d6d0c4;
+    --color-skill-cssdesign: #c091b8;
+    --color-skill-backend: #96b47e;
+  }
 }
 
 *, *::before, *::after {
@@ -80,7 +179,7 @@ body {
   inset: 0;
   z-index: 9998;
   pointer-events: none;
-  opacity: 0.028;
+  opacity: var(--grain-opacity);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -113,6 +212,15 @@ body {
   color: var(--color-ink-faint);
 }
 
+/* 한글 라벨 — 영문용 대문자/자간을 그대로 쓰면 글자가 벌어져 보인다 */
+.label-ko {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--color-ink-faint);
+}
+
 .rule {
   border: 0;
   border-top: 1px solid var(--color-rule);
@@ -128,7 +236,7 @@ body {
   right: 0;
   z-index: 100;
   height: 72px;
-  background: rgba(250, 249, 245, 0.86);
+  background: var(--color-header-bg);
   backdrop-filter: saturate(180%) blur(14px);
   -webkit-backdrop-filter: saturate(180%) blur(14px);
   border-bottom: 1px solid transparent;
@@ -213,6 +321,42 @@ body {
 
 .nav-link.active::after {
   transform: scaleX(1);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: var(--color-ink-soft);
+  cursor: pointer;
+  transition: color 0.2s var(--ease), background-color 0.2s var(--ease);
+}
+
+.theme-toggle:hover {
+  color: var(--color-clay);
+  background: var(--color-paper-deep);
+}
+
+.theme-toggle svg {
+  width: 17px;
+  height: 17px;
 }
 
 .mobile-menu-btn {
@@ -665,6 +809,12 @@ body {
   background: currentColor;
   flex-shrink: 0;
 }
+
+.skill-name.react { color: var(--color-skill-react); }
+.skill-name.typescript { color: var(--color-skill-typescript); }
+.skill-name.nextjs { color: var(--color-skill-nextjs); }
+.skill-name.cssdesign { color: var(--color-skill-cssdesign); }
+.skill-name.backend { color: var(--color-skill-backend); }
 
 .skill-items {
   font-size: 0.9375rem;
@@ -1210,10 +1360,15 @@ body {
     border-radius: 50%;
   }
 
+  /* 3등분하면 '주력 스택' 값이 줄바꿈되며 정렬이 깨진다 */
   .hero-meta {
-    grid-template-columns: repeat(3, 1fr);
-    gap: 1.25rem;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.5rem 1.25rem;
     margin-top: 2.5rem;
+  }
+
+  .meta-cell:nth-of-type(3) {
+    grid-column: 1 / -1;
   }
 
   .hero-links {

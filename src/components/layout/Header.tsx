@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import { SITE_CONFIG } from '@/lib/config';
+import ThemeToggle from '@/components/layout/ThemeToggle';
 
 export default function Header() {
   const pathname = usePathname();
@@ -32,7 +33,8 @@ export default function Header() {
             <span className="logo-dot" aria-hidden="true" />
           </Link>
 
-          <nav>
+          <div className="header-right">
+            <nav>
             <ul className={`nav-menu${menuOpen ? ' open' : ''}`} id="navMenu">
               {navLinks.map(({ href, label }) => {
                 // '/#about'은 홈 안의 앵커라 활성 상태를 갖지 않는다
@@ -57,14 +59,18 @@ export default function Header() {
             </ul>
           </nav>
 
-          <button
-            className="mobile-menu-btn"
-            id="mobileMenuBtn"
-            aria-label="Toggle menu"
-            onClick={() => setMenuOpen((o) => !o)}
-          >
-            <i className={`fa fa-${menuOpen ? 'times' : 'bars'}`} />
-          </button>
+            <div className="header-actions">
+              <ThemeToggle />
+              <button
+                className="mobile-menu-btn"
+                id="mobileMenuBtn"
+                aria-label="Toggle menu"
+                onClick={() => setMenuOpen((o) => !o)}
+              >
+                <i className={`fa fa-${menuOpen ? 'times' : 'bars'}`} />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </header>

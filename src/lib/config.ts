@@ -11,34 +11,35 @@ export const SITE_CONFIG = {
     email: 'mrlee3233@gmail.com',
     techStack: ['React', 'TypeScript', 'Next.js', 'Tailwind CSS', 'Vite'],
     skills: [
+      // slug은 다크모드에서 색이 따라 바뀌도록 CSS 클래스로 쓰인다
       {
         category: 'React',
+        slug: 'react',
         icon: 'fa-brands fa-react',
-        color: '#2e7d74',
         items: ['React 19', 'React Query', 'Zustand', 'Jotai', 'React Hook Form'],
       },
       {
         category: 'TypeScript',
+        slug: 'typescript',
         icon: 'fa-brands fa-js',
-        color: '#35618e',
         items: ['TypeScript 5.x', 'Zod', 'tRPC', 'Generics', 'Type Challenges'],
       },
       {
         category: 'Next.js',
+        slug: 'nextjs',
         icon: '▲',
-        color: '#33312d',
         items: ['Next.js 15', 'App Router', 'SEO · SSR · CSR', 'Server Actions', 'Vercel'],
       },
       {
         category: 'CSS/Design',
+        slug: 'cssdesign',
         icon: 'fa-brands fa-css3-alt',
-        color: '#8a5a83',
         items: ['Tailwind CSS v4', 'CSS Grid', 'Container Queries', 'Framer Motion'],
       },
       {
         category: 'Backend/Infra',
+        slug: 'backend',
         icon: 'fa-solid fa-server',
-        color: '#5c7a4a',
         items: ['Node.js', 'REST API', 'Prisma', 'PostgreSQL', 'GitHub Actions'],
       },
     ],

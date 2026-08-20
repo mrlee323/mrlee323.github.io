@@ -35,15 +35,15 @@ export default function HeroSection({ postCount }: { postCount: number }) {
         <div className="hero-meta">
           <div className="meta-cell">
             <span className="meta-value">{postCount}</span>
-            <span className="label">포스트</span>
+            <span className="label-ko">포스트</span>
           </div>
           <div className="meta-cell">
             <span className="meta-value">{author.stats.years}</span>
-            <span className="label">경력</span>
+            <span className="label-ko">경력</span>
           </div>
           <div className="meta-cell">
             <span className="meta-value">{author.stats.mainStack}</span>
-            <span className="label">주력 스택</span>
+            <span className="label-ko">주력 스택</span>
           </div>
           <div className="hero-links">
             <Link href="#posts" className="link-underline">

@@ -31,10 +31,7 @@ export default function AboutSection() {
               </div>
               {author.skills.map((skill) => (
                 <div key={skill.category} className="skill-row">
-                  <span
-                    className="skill-name"
-                    style={{ color: skill.color }}
-                  >
+                  <span className={`skill-name ${skill.slug}`}>
                     {skill.category}
                   </span>
                   <span className="skill-items">
