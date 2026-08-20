@@ -28,23 +28,32 @@ export default function Header() {
       <div className="container">
         <div className="header-content">
           <Link href="/" className="logo">
-            <div className="logo-icon">{ }</div>
-            <span>{SITE_CONFIG.shortName}</span>
+            <span className="logo-mark">{SITE_CONFIG.shortName}</span>
+            <span className="logo-dot" aria-hidden="true" />
           </Link>
 
           <nav>
             <ul className={`nav-menu${menuOpen ? ' open' : ''}`} id="navMenu">
-              {navLinks.map(({ href, label }) => (
-                <li key={href}>
-                  <Link
-                    href={href}
-                    className={`nav-link${pathname === href || (href !== '/' && pathname.startsWith(href.replace('/#about', ''))) ? ' active' : ''}`}
-                    onClick={() => setMenuOpen(false)}
-                  >
-                    {label}
-                  </Link>
-                </li>
-              ))}
+              {navLinks.map(({ href, label }) => {
+                // '/#about'은 홈 안의 앵커라 활성 상태를 갖지 않는다
+                const isActive = href.includes('#')
+                  ? false
+                  : href === '/'
+                    ? pathname === '/'
+                    : pathname.startsWith(href);
+
+                return (
+                  <li key={href}>
+                    <Link
+                      href={href}
+                      className={`nav-link${isActive ? ' active' : ''}`}
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      {label}
+                    </Link>
+                  </li>
+                );
+              })}
             </ul>
           </nav>
 

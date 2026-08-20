@@ -36,7 +36,7 @@ export default function TableOfContents({ items }: TableOfContentsProps) {
 
   return (
     <aside className="toc">
-      <p className="toc-title">목차</p>
+      <p className="toc-title label">목차</p>
       <ul className="toc-list">
         {items.map((item) => (
           <li

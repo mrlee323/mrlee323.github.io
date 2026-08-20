@@ -13,34 +13,24 @@ export default function PostHeader({ frontmatter }: PostHeaderProps) {
   return (
     <div className="post-page-header">
       <div className="container-narrow">
-        <span className={`post-category ${frontmatter.category}`} style={{ marginBottom: '1rem', display: 'inline-flex' }}>
-          {category.icon.startsWith('fa') ? (
-            <i className={category.icon} />
-          ) : (
-            <span>{category.icon}</span>
-          )}
-          {' '}{category.label}
+        <span className={`cat-mark ${frontmatter.category}`}>
+          {category.label}
         </span>
 
-        <h1 className="post-title" style={{ fontSize: '2rem', lineHeight: '1.3', marginBottom: '1.25rem' }}>
-          {frontmatter.title}
-        </h1>
+        <h1 className="post-page-title">{frontmatter.title}</h1>
 
         <div className="post-meta">
-          <span className="post-meta-item">
-            <i className="fa fa-calendar" />
-            {formatDate(frontmatter.date)}
-          </span>
+          <span className="post-meta-item">{SITE_CONFIG.author.name}</span>
+          <span className="dot-sep" aria-hidden="true" />
+          <span className="post-meta-item">{formatDate(frontmatter.date)}</span>
           {frontmatter.readingTime && (
-            <span className="post-meta-item">
-              <i className="fa fa-clock" />
-              {frontmatter.readingTime} min read
-            </span>
+            <>
+              <span className="dot-sep" aria-hidden="true" />
+              <span className="post-meta-item">
+                {frontmatter.readingTime}분 읽기
+              </span>
+            </>
           )}
-          <span className="post-meta-item">
-            <i className="fa fa-user" />
-            {SITE_CONFIG.name}
-          </span>
         </div>
       </div>
     </div>

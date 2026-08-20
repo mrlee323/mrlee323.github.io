@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { getAllPostsMeta } from '@/lib/posts';
 import { CATEGORY_MAP } from '@/lib/categories';
-import { formatDate } from '@/lib/utils';
 
 export const metadata: Metadata = {
   title: 'Archives',
@@ -22,13 +21,11 @@ export default function ArchivesPage() {
   const years = Object.keys(grouped).sort((a, b) => Number(b) - Number(a));
 
   return (
-    <div style={{ paddingTop: '3rem', paddingBottom: '5rem' }}>
+    <div className="section">
       <div className="container">
-        <div className="section-header" style={{ marginBottom: '3rem' }}>
-          <h1 className="section-title">Archives</h1>
-          <p className="section-subtitle">
-            총 {allPosts.length}개의 포스트
-          </p>
+        <div className="section-head">
+          <h1 className="section-title">아카이브</h1>
+          <p className="section-subtitle">총 {allPosts.length}편</p>
         </div>
 
         {years.map((year) => (
@@ -43,10 +40,12 @@ export default function ArchivesPage() {
                       <span className="archive-item-date">
                         {post.frontmatter.date.slice(5).replace('-', '.')}
                       </span>
-                      <span className={`post-category ${post.frontmatter.category}`} style={{ fontSize: '0.75rem', padding: '0.15rem 0.6rem' }}>
+                      <span className={`cat-mark ${post.frontmatter.category}`}>
                         {category.label}
                       </span>
-                      <span className="archive-item-title">{post.frontmatter.title}</span>
+                      <span className="archive-item-title">
+                        {post.frontmatter.title}
+                      </span>
                     </Link>
                   </li>
                 );

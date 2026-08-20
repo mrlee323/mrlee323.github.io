@@ -15,7 +15,7 @@ export default function CategoryTabs({ active, onChange }: CategoryTabsProps) {
         data-category="all"
         onClick={() => onChange('all')}
       >
-        All
+        전체
       </button>
       {CATEGORIES.map((cat) => (
         <button

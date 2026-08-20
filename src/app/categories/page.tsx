@@ -20,67 +20,43 @@ export default function CategoriesPage() {
   }));
 
   return (
-    <div style={{ paddingTop: '3rem', paddingBottom: '5rem' }}>
+    <div className="section">
       <div className="container">
-        <div className="section-header" style={{ marginBottom: '3rem' }}>
-          <h1 className="section-title">Categories</h1>
-          <p className="section-subtitle">주제별로 정리된 프론트엔드 개발 인사이트</p>
+        <div className="section-head">
+          <h1 className="section-title">카테고리</h1>
+          <p className="section-subtitle">주제별로 정리된 글</p>
         </div>
 
-        <div className="categories-grid">
+        <div className="categories-list">
           {categoriesWithCount.map((cat) => (
-            <div
-              key={cat.slug}
-              className="category-card"
-              style={{ borderColor: `rgba(${hexToRgb(cat.color)}, 0.15)` }}
-            >
-              <div className={`category-icon ${cat.slug}`}>
-                {cat.icon.startsWith('fa') ? (
-                  <i className={cat.icon} />
-                ) : (
-                  <span>{cat.icon}</span>
+            <div key={cat.slug} className="category-row">
+              <div>
+                <span className={`cat-mark ${cat.slug}`}>{cat.label}</span>
+                <h2 className="category-row-title">{cat.label}</h2>
+              </div>
+
+              <div>
+                <p className="category-row-desc">{cat.description}</p>
+                {cat.recentPosts.length > 0 && (
+                  <ul className="category-recent">
+                    {cat.recentPosts.map((post) => (
+                      <li key={post.slug}>
+                        <Link href={`/posts/${post.slug}/`}>
+                          {post.frontmatter.title}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
 
-              <h2 className="category-card-title">{cat.label}</h2>
-              <p className="category-card-desc">{cat.description}</p>
-
-              <span
-                className="category-card-count"
-                style={{
-                  background: cat.bgColor,
-                  color: cat.color,
-                  border: `1px solid ${cat.borderColor}`,
-                }}
-              >
-                {cat.postCount}개 포스트
+              <span className="category-count">
+                {String(cat.postCount).padStart(2, '0')}
               </span>
-
-              {cat.recentPosts.length > 0 && (
-                <ul style={{ marginTop: '1rem', listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {cat.recentPosts.map((post) => (
-                    <li key={post.slug}>
-                      <Link
-                        href={`/posts/${post.slug}/`}
-                        style={{ fontSize: '0.875rem', color: 'var(--color-text-secondary)', textDecoration: 'none' }}
-                      >
-                        → {post.frontmatter.title}
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              )}
             </div>
           ))}
         </div>
       </div>
     </div>
   );
-}
-
-function hexToRgb(hex: string): string {
-  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result
-    ? `${parseInt(result[1], 16)}, ${parseInt(result[2], 16)}, ${parseInt(result[3], 16)}`
-    : '255, 255, 255';
 }

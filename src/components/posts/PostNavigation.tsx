@@ -13,7 +13,7 @@ export default function PostNavigation({ prev, next }: PostNavigationProps) {
     <div className="post-navigation">
       {prev ? (
         <Link href={`/posts/${prev.slug}/`} className="post-nav-item">
-          <span className="post-nav-label">← 이전 글</span>
+          <span className="post-nav-label label">← 이전 글</span>
           <span className="post-nav-title">{prev.frontmatter.title}</span>
         </Link>
       ) : (
@@ -22,7 +22,7 @@ export default function PostNavigation({ prev, next }: PostNavigationProps) {
 
       {next ? (
         <Link href={`/posts/${next.slug}/`} className="post-nav-item next">
-          <span className="post-nav-label">다음 글 →</span>
+          <span className="post-nav-label label">다음 글 →</span>
           <span className="post-nav-title">{next.frontmatter.title}</span>
         </Link>
       ) : (

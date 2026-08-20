@@ -8,7 +8,7 @@ export default async function HomePage() {
 
   return (
     <>
-      <HeroSection />
+      <HeroSection postCount={posts.length} />
       <PostsSection posts={posts} />
       <AboutSection />
     </>
