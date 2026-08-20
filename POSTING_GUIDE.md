@@ -319,6 +319,7 @@ git commit -m "ci: [변경 내용]"
 | 2026-07-15 | llm-production-lessons | ai |
 | 2026-08-10 | senior-frontend-judgment | react |
 | 2026-08-20 | ai-coding-assistant-team | ai |
+| 2026-08-20 | multi-repo-ai-workflow | ai |
 
 ---
 
@@ -346,3 +347,4 @@ Day 1 = 2026-05-16. 시니어 4년차 관점에서 성능·AI·판단력을 다�
 |-----|------|--------|------|
 | 5 | 2026-08-10 | senior-frontend-judgment | ✅ |
 | 6 | 2026-08-20 | ai-coding-assistant-team | ✅ |
+| 7 | 2026-08-20 | multi-repo-ai-workflow | ✅ |
