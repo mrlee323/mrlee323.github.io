@@ -1,0 +1,150 @@
+---
+title: "Edge Runtime vs Node.js Runtime: 어디서 실행되느냐보다 무엇과 가까운가"
+date: "2026-10-26"
+category: "nextjs"
+excerpt: "Edge Runtime은 '빠른 런타임'이 아니라 '제약이 많은 대신 어디서든 뜰 수 있는 런타임'이다. 두 런타임이 왜 이렇게 나뉘었는지, 내부에서 무엇이 다른지, 그리고 Edge를 골랐다가 오히려 느려지는 이유를 정리했다."
+tags: ["Next.js", "Edge Runtime", "Node.js", "Middleware", "Serverless"]
+readingTime: 7
+---
+
+## Edge Runtime이 존재하는 이유
+
+`export const runtime = 'edge'` 한 줄이면 라우트가 "엣지"에서 돈다. 이름만 보면 무조건 빠를 것 같다. 실제로 처음 도입했을 때 나도 그렇게 생각했다.
+
+그런데 Edge Runtime이 해결하려던 문제는 "코드 실행 속도"가 아니다. **콜드 스타트와 사용자까지의 물리적 거리**다.
+
+기존 서버리스 함수(Node.js)는 이런 구조다.
+
+```
+사용자(서울) → CDN → 서버리스 함수(us-east-1) → 응답
+                        ↑
+               컨테이너 부팅 + Node 런타임 로드 (콜드 스타트 수백 ms)
+```
+
+함수 하나를 띄우려면 컨테이너를 올리고, Node.js 런타임을 로드하고, `node_modules`를 읽어야 한다. 그리고 그 함수는 특정 리전 하나에 있다.
+
+Edge Runtime은 이 두 가지를 동시에 줄이려고 만들어졌다.
+
+1. **런타임을 가볍게** — 컨테이너 대신 V8 isolate 하나만 띄운다.
+2. **위치를 분산** — 가벼우니까 전 세계 CDN 노드마다 띄울 수 있다.
+
+핵심은 이거다.
+
+> Edge는 "빠른 Node"가 아니라 "Node를 포기하고 얻은 가벼움"이다.
+
+## 내부 동작 방식: isolate vs 프로세스
+
+두 런타임의 차이는 결국 **실행 단위**의 차이다.
+
+| | Node.js Runtime | Edge Runtime |
+|---|---|---|
+| 실행 단위 | 프로세스(컨테이너) | V8 isolate |
+| 콜드 스타트 | 수백 ms ~ 1s+ | 수 ms 수준 |
+| 사용 가능 API | Node 전체 (`fs`, `net`, `child_process` 등) | Web 표준 API (`fetch`, `Request`, `Response`, `crypto.subtle`, `ReadableStream`) |
+| 네이티브 모듈 | 가능 | 불가 |
+| 동적 코드 실행 | 가능 | `eval`, `new Function` 불가 |
+| 번들 크기 | 넉넉함 | 플랫폼 제한 있음 (수 MB) |
+| 실행 위치 | 지정한 리전 | 요청과 가까운 노드 |
+
+V8 isolate는 브라우저 탭 하나가 다른 탭과 메모리를 공유하지 않는 것과 같은 격리 단위다. 하나의 프로세스 안에 수천 개의 isolate가 뜰 수 있다. 그래서 싸고 빠르다.
+
+대신 isolate 안에는 **V8 엔진과 Web API만 있다.** Node.js의 `fs`, `Buffer`(일부 폴리필 제외), `net` 같은 건 Node가 V8 위에 C++로 얹은 기능이라 isolate에는 없다.
+
+이게 실무에서 의미하는 건 단순하다.
+
+```ts
+// app/api/report/route.ts
+export const runtime = 'edge';
+
+import { PrismaClient } from '@prisma/client'; // ❌ 네이티브 엔진 + TCP 소켓
+import pdf from 'pdf-lib';                     // ⚠️ 번들 크기 제한에 걸리기 쉬움
+import fs from 'node:fs';                      // ❌ 존재하지 않음
+```
+
+빌드는 통과했는데 배포 후 런타임에 터지는 경우도 있다. 의존성 안쪽 깊은 곳에서 Node API를 쓰고 있으면 import 시점엔 모르다가 실행 경로를 타는 순간 에러가 난다.
+
+## 함정: Edge인데 왜 더 느려졌나
+
+Edge를 쓰고 오히려 느려진 경험이 있다면 대부분 이 구조다.
+
+```
+사용자(서울) → Edge(서울) ──DB 쿼리──→ DB(us-east-1)
+                        ←────────────
+                        ──DB 쿼리──→
+                        ←────────────
+                        ──DB 쿼리──→
+                        ←────────────
+```
+
+함수는 서울에서 떴다. 하지만 DB는 버지니아에 있다. 서울 ↔ 버지니아 왕복이 약 180ms라면, 쿼리 3번이면 500ms가 넘는다.
+
+같은 로직을 Node.js 함수로 DB와 같은 리전에 두면 이렇다.
+
+```
+사용자(서울) ──────────→ 함수(us-east-1) ─쿼리×3 (각 1~2ms)─ DB(us-east-1)
+            ←──────────
+```
+
+사용자와 함수 사이 왕복 1번(180ms) + 쿼리 3번(수 ms). 이쪽이 훨씬 빠르다.
+
+> 응답 시간은 "함수가 사용자와 얼마나 가까운가"가 아니라 "함수가 **데이터**와 얼마나 가까운가"가 좌우한다.
+
+여행 서비스처럼 거의 모든 요청이 재고·가격 API나 DB를 거치는 구조라면, Edge의 지리적 이점은 대부분 데이터 왕복에 잡아먹힌다.
+
+그래서 Vercel도 한동안 Edge를 밀다가, 이후에는 대부분의 워크로드에 Node.js 런타임을 기본으로 권장하는 쪽으로 방향을 틀었다. Next.js 역시 Middleware에서 Node.js 런타임을 쓸 수 있게 열었다(15.2 실험적 → 15.5 안정화). "Middleware = Edge"라는 공식이 깨진 것이다.
+
+## 실제로 언제 쓰는가
+
+판단 기준은 하나로 정리된다. **외부 데이터 없이, 혹은 엣지에 있는 데이터만으로 응답을 끝낼 수 있는가.**
+
+**Edge가 맞는 경우:**
+- 요청을 보고 바로 판단하는 로직 — 쿠키 기반 리다이렉트, A/B 버킷 분기, 지역별 언어 라우팅
+- JWT 서명 검증처럼 `crypto.subtle`만으로 끝나는 인증 체크
+- 엣지 KV나 캐시에서 읽고 끝나는 응답
+- 외부 API로 그대로 넘기는 얇은 스트리밍 프록시 (단, 응답 대기 시간 제한은 플랫폼마다 확인)
+
+```ts
+// middleware.ts — Edge에 잘 맞는 전형적인 예
+export function middleware(req: NextRequest) {
+  const bucket = req.cookies.get('ab-bucket')?.value ?? (Math.random() < 0.5 ? 'a' : 'b');
+  const res = NextResponse.rewrite(new URL(`/${bucket}${req.nextUrl.pathname}`, req.url));
+  res.cookies.set('ab-bucket', bucket);
+  return res;
+}
+```
+
+외부 호출이 하나도 없다. 이런 코드는 사용자 바로 옆에서 수 ms 안에 끝난다.
+
+**Node.js가 맞는 경우:**
+- DB 쿼리가 2번 이상 있는 모든 API
+- ORM(Prisma 등), 이미지 처리(sharp), PDF 생성 같은 Node 의존 라이브러리
+- ISR, `revalidate` 등 Next.js 캐싱 기능을 적극적으로 쓰는 페이지
+- 무엇을 써야 할지 모르겠는 경우 — **기본값이 Node인 데는 이유가 있다**
+
+## 흔한 오해 정리
+
+**"Edge가 실행 자체가 빠르다"** — 아니다. 같은 V8이다. CPU 작업이 무거우면 오히려 Edge의 CPU 시간 제한에 먼저 걸린다.
+
+**"Middleware는 Edge에서만 돈다"** — 예전엔 그랬다. 지금은 Node.js 런타임으로 돌릴 수 있고, DB 세션 조회가 필요한 인증이라면 그 편이 낫다.
+
+**"runtime만 바꾸면 된다"** — 의존성 트리 전체가 Web API만 쓰는지 확인해야 한다. 런타임 전환은 사실상 **의존성 감사(audit)** 작업이다.
+
+```ts
+// ❌ 페이지 전체를 Edge로
+export const runtime = 'edge';
+export default async function Page() {
+  const user = await db.user.find(...);     // 원거리 DB
+  const orders = await db.order.list(...);  // 또 원거리
+  return <Orders user={user} orders={orders} />;
+}
+
+// ✅ 판단만 Edge(Middleware)에서, 데이터는 Node 함수에서
+// middleware.ts: 로그인 쿠키 없으면 /login으로 즉시 리다이렉트
+// page.tsx: 기본(Node) 런타임에서 DB와 같은 리전으로 조회
+```
+
+## 정리
+
+Edge Runtime의 핵심은 **"무거운 런타임을 포기하는 대신, 어디서든 즉시 뜰 수 있다"** 이다.
+
+요청 정보만으로 판단이 끝나는 얇은 로직은 Edge, 데이터를 만지는 로직은 데이터 옆의 Node.js에 둔다. 런타임을 고를 때는 "사용자와 얼마나 가까운가"가 아니라 **"이 코드가 기다리는 상대가 어디에 있는가"** 를 먼저 물어보면 된다.
