@@ -1,0 +1,168 @@
+---
+title: "JS: async/await의 정체 — Promise 위에 얹은 제너레이터 문법"
+date: "2026-10-30"
+category: "typescript"
+excerpt: "async/await는 새로운 비동기 모델이 아니라 Promise 체인을 동기 코드처럼 읽게 만든 문법입니다. await가 함수를 중단하고 재개하는 원리를 알면 순차 실행 함정과 에러 처리 실수가 왜 생기는지 보입니다."
+tags: ["JavaScript", "async/await", "Promise", "Generator"]
+readingTime: 7
+---
+
+## async/await가 존재하는 이유
+
+Promise는 콜백 지옥을 평평하게 만들었지만, 값을 꺼내려면 여전히 `.then` 안에서만 쓸 수 있다는 한계가 남았습니다.
+
+```js
+function load() {
+  return fetchUser()
+    .then((user) => fetchOrders(user.id).then((orders) => ({ user, orders })))
+    .catch(handle);
+}
+```
+
+`user`를 다음 단계에서도 쓰려면 중첩하거나 바깥 변수로 빼야 합니다. 분기와 반복이 들어가면 체인은 금세 읽기 어려워집니다. 제어 흐름(`if`, `for`, `try/catch`)은 동기 코드에서만 자연스럽기 때문입니다.
+
+> 비동기 값을 기다리는 동안 **함수 실행을 잠시 멈췄다가, 값이 오면 이어서 실행**할 수 있다면?
+
+async/await는 이 질문에 대한 답입니다. 스레드를 막는 것이 아니라 **함수 하나의 실행을 일시 중단**하는 것입니다. 이 점이 가장 중요한 오해 포인트이기도 합니다.
+
+## 내부 동작 방식
+
+### 제너레이터 + Promise 러너
+
+async 함수는 개념적으로 제너레이터 위에 Promise를 구동하는 러너를 얹은 것과 같습니다. 예전 `co` 라이브러리나 Babel 변환 결과가 정확히 이 구조였습니다.
+
+```js
+// async 함수
+async function main() {
+  const user = await fetchUser();
+  return user.name;
+}
+
+// 개념적으로 같은 코드
+function main() {
+  return run(function* () {
+    const user = yield fetchUser();
+    return user.name;
+  });
+}
+
+function run(genFn) {
+  return new Promise((resolve, reject) => {
+    const gen = genFn();
+    function step(method, arg) {
+      let r;
+      try { r = gen[method](arg); } catch (e) { return reject(e); }
+      if (r.done) return resolve(r.value);
+      Promise.resolve(r.value).then(
+        (v) => step("next", v),
+        (e) => step("throw", e)
+      );
+    }
+    step("next");
+  });
+}
+```
+
+핵심은 세 가지입니다.
+
+1. `await x`는 `yield`처럼 함수를 **중단하고 제어권을 호출자에게 돌려줍니다.**
+2. 기다리던 Promise가 settle되면 `.then` 콜백이 **마이크로태스크 큐**에 들어가고, 거기서 `gen.next(value)`로 재개됩니다.
+3. rejected면 `gen.throw(error)`로 재개되므로, **`await` 지점에서 예외가 던져진 것처럼** 동작해 `try/catch`가 잡을 수 있습니다.
+
+### 엔진이 실제로 하는 일
+
+V8은 제너레이터를 흉내 내지 않고 자체 상태 머신으로 처리합니다. async 함수가 호출되면 암묵적 Promise가 만들어지고, 함수 본문은 첫 `await`까지 **동기적으로** 실행됩니다. `await`를 만나면 현재 실행 컨텍스트(지역 변수, 실행 위치)를 힙에 저장하고 빠져나옵니다. 이후 재개 시 그 상태를 복원합니다.
+
+```js
+async function f() {
+  console.log("1");
+  await null;
+  console.log("3");
+}
+f();
+console.log("2");
+// 1, 2, 3
+```
+
+`await null`조차 마이크로태스크 한 틱을 양보합니다. 그래서 "이미 끝난 값을 await해도 순서가 바뀐다"는 일이 생깁니다.
+
+### await는 몇 틱 걸리는가
+
+과거에는 네이티브 Promise를 await하면 추가 틱이 2~3번 낭비됐습니다. ES2019 명세 변경(V8 7.2)으로 `await promise`는 래핑 없이 해당 Promise에 바로 붙어 **1틱**으로 줄었습니다. 반면 thenable(`then`을 가진 객체)을 await하면 `then` 호출을 위한 마이크로태스크가 추가됩니다. 오래된 글에서 보이는 틱 순서 퀴즈 답이 지금과 다른 이유입니다.
+
+## 실제로 언제 쓰는가
+
+- **순차 의존이 있는 흐름**: 앞 결과가 뒤 요청의 입력일 때. 가장 자연스러운 사용처입니다.
+- **try/catch/finally와 결합한 에러 처리**: 로딩 상태 해제를 `finally`에 두는 패턴.
+- **반복문 안의 비동기 제어**: `for...of` + `await`로 순차 처리.
+
+반대로 서로 독립적인 요청은 await를 나열하지 말고 동시에 시작해야 합니다.
+
+```js
+// 독립적인데 순차 실행 — 총 시간 = a + b
+const a = await fetchA();
+const b = await fetchB();
+
+// 먼저 시작하고 나중에 기다린다 — 총 시간 = max(a, b)
+const [a, b] = await Promise.all([fetchA(), fetchB()]);
+```
+
+여행/OTA 서비스에서 상품 상세, 재고, 리뷰를 한 화면에서 불러올 때 이 차이가 곧 첫 화면 시간입니다. 하나만 실패해도 괜찮은 조합이라면 `Promise.allSettled`를 씁니다.
+
+## 흔한 오해와 함정
+
+### 1. await는 스레드를 막지 않는다
+
+`await`는 해당 async 함수만 멈춥니다. 호출자와 이벤트 루프는 계속 돕니다. 다만 await 뒤 코드는 **호출 시점과 다른 상태**에서 재개될 수 있어, 그 사이 바뀐 상태(state, 클로저 변수)를 읽는 경쟁 조건이 생깁니다. 검색창에서 응답 순서가 뒤집히는 버그가 대표적입니다.
+
+### 2. forEach 안의 await
+
+```js
+// 수정 전 — 기다리지 않고 지나간다
+ids.forEach(async (id) => {
+  await save(id);
+});
+console.log("done"); // save가 끝나기 전에 실행됨
+
+// 수정 후 — 순차
+for (const id of ids) {
+  await save(id);
+}
+
+// 수정 후 — 병렬
+await Promise.all(ids.map((id) => save(id)));
+```
+
+`forEach`는 콜백의 반환 Promise를 무시합니다. async 콜백은 그저 Promise를 반환하는 함수일 뿐입니다.
+
+### 3. return과 return await의 차이
+
+```js
+async function a() {
+  try {
+    return fetchData();       // rejection을 catch가 못 잡는다
+  } catch (e) { /* 실행되지 않음 */ }
+}
+
+async function b() {
+  try {
+    return await fetchData(); // 여기서 잡힌다
+  } catch (e) { /* 실행됨 */ }
+}
+```
+
+`try` 블록 안에서는 `return await`가 의미를 가집니다. Promise를 그대로 반환하면 함수는 이미 try를 빠져나간 뒤에 reject되기 때문입니다.
+
+### 4. 에러는 삼켜지거나 늦게 터진다
+
+await하지 않은 Promise의 rejection은 `unhandledrejection`으로 터집니다. `async` 함수를 호출만 하고 버리면(fire-and-forget) 에러 핸들러가 없는 셈이므로 `.catch`를 직접 붙이거나 명시적으로 처리해야 합니다.
+
+### 5. 최상위 await도 같은 원리
+
+모듈 최상위 `await`는 모듈 자체를 async로 만드는 것입니다. 이 모듈을 import하는 쪽은 그 Promise가 끝날 때까지 평가를 기다립니다. 편리하지만 의존 그래프 전체의 로딩을 지연시킬 수 있습니다.
+
+## 정리
+
+async/await의 본질은 **Promise 체인을 제너레이터식 중단/재개로 감춘 문법**이며, 스레드를 막지 않고 함수 하나의 실행만 마이크로태스크 경계에서 멈춥니다.
+
+의존 관계가 있으면 await로 순차 작성하고, 독립적이면 먼저 시작해서 `Promise.all`로 모으세요. await를 쓸 때마다 "여기서 한 틱 양보하고, 돌아왔을 때 상태가 같다고 믿어도 되는가?"를 스스로 물어보는 것이 가장 실용적인 기준입니다.
