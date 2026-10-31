@@ -1,0 +1,151 @@
+---
+title: "JS: 프로토타입 체인 — 상속이 아니라 위임이다"
+date: "2026-10-31"
+category: "typescript"
+excerpt: "JavaScript는 왜 클래스 복사 대신 객체 간 위임을 택했을까. 프로퍼티 조회가 [[Prototype]] 링크를 따라 올라가는 과정과, class 문법 아래에서 실제로 벌어지는 일을 엔진 관점에서 풀어봅니다."
+tags: ["JavaScript", "Prototype", "Object", "class"]
+readingTime: 7
+---
+
+## 프로토타입 체인이 존재하는 이유
+
+Java나 C++의 상속은 **클래스라는 설계도**에서 인스턴스를 찍어내는 모델입니다. 메서드는 설계도에 있고, 인스턴스는 그 설계도를 따릅니다.
+
+JavaScript는 처음부터 이 모델을 택하지 않았습니다. 1995년, 짧은 시간 안에 만들어진 언어에서 Self 언어의 영향을 받아 **"객체가 다른 객체를 직접 가리키고, 모르는 건 그쪽에 물어본다"**는 단순한 모델을 채택했습니다.
+
+> 상속은 복사가 아니라 **위임(delegation)**입니다.
+
+이 차이가 중요한 이유는 하나입니다. 메서드가 인스턴스마다 복사되지 않고, **하나의 객체를 여러 객체가 공유**한다는 점입니다. 인스턴스 1만 개를 만들어도 메서드는 메모리에 한 벌만 존재합니다.
+
+## 내부 동작 방식
+
+### [[Prototype]] 슬롯
+
+모든 객체는 내부 슬롯 `[[Prototype]]`을 가집니다. 다른 객체 또는 `null`을 가리키는 숨은 링크입니다. 코드에서는 `Object.getPrototypeOf(obj)`로 읽습니다. (`__proto__`는 이 슬롯에 접근하는 레거시 접근자입니다.)
+
+```js
+const animal = { eat() { return "냠" } }
+const dog = Object.create(animal) // dog.[[Prototype]] === animal
+dog.bark = () => "멍"
+
+dog.eat() // "냠"
+```
+
+### 프로퍼티 조회 알고리즘
+
+`dog.eat`을 읽을 때 엔진은 이렇게 동작합니다.
+
+```
+dog 자신의 프로퍼티에 eat 있나?  → 없음
+  ↓ [[Prototype]]
+animal에 eat 있나?               → 있음, 반환
+  ↓ (없었다면)
+Object.prototype에 있나?
+  ↓
+null → undefined
+```
+
+이 사슬이 **프로토타입 체인**입니다. 중요한 비대칭이 있습니다.
+
+- **읽기**: 체인을 끝까지 올라간다
+- **쓰기**: 기본적으로 **자기 자신**에 프로퍼티를 만든다 (체인을 타지 않음)
+
+그래서 `dog.eat = ...`은 `animal.eat`을 바꾸지 않고 dog에 **섀도잉(shadowing)** 프로퍼티를 만듭니다. (프로토타입에 setter나 `writable: false`가 있으면 예외입니다.)
+
+### function과 prototype 프로퍼티
+
+혼란의 근원은 이름입니다. `[[Prototype]]`(객체의 링크)과 `Function.prototype`이 아닌 **함수의 `.prototype` 프로퍼티**는 다른 것입니다.
+
+`new Foo()`가 하는 일은 사실상 이렇습니다.
+
+```js
+function create(Foo, ...args) {
+  const obj = Object.create(Foo.prototype) // 링크 연결
+  const result = Foo.apply(obj, args)      // 생성자 실행
+  return result instanceof Object ? result : obj
+}
+```
+
+즉 `Foo.prototype`은 "Foo로 만든 인스턴스들의 `[[Prototype]]`이 될 객체"입니다. 그리고 `Foo.prototype.constructor === Foo`로 역참조가 걸려 있습니다.
+
+### class는 문법 설탕인가
+
+대부분 그렇습니다. 아래 두 코드는 같은 체인을 만듭니다.
+
+```js
+class User {
+  greet() { return "hi" }
+}
+
+// 거의 동등
+function User() {}
+User.prototype.greet = function () { return "hi" }
+```
+
+`greet`은 인스턴스가 아니라 `User.prototype`에 있습니다. `extends`는 `Child.prototype.[[Prototype]] = Parent.prototype`을 연결하고, 추가로 `Child.[[Prototype]] = Parent`를 걸어 **static 상속**까지 처리합니다. 다만 class는 `new` 없이 호출 불가, 메서드가 non-enumerable, TDZ 적용 등 함수 생성자와 다른 제약이 있어 완전히 같지는 않습니다.
+
+### 엔진은 이걸 어떻게 빠르게 하나
+
+체인을 매번 선형 탐색하면 느릴 것 같지만, V8은 **Hidden Class(Shape)**와 **Inline Cache**로 같은 형태의 객체에 대한 조회 결과를 캐싱합니다. 프로토타입 체인이 바뀌면 이 캐시가 무효화됩니다. 이 점이 아래 함정과 연결됩니다.
+
+## 실제로 언제 쓰는가
+
+직접 `Object.create`를 쓸 일은 많지 않지만, 체인을 이해해야 하는 순간은 분명합니다.
+
+- **디버깅**: 콘솔에서 `[[Prototype]]`을 펼쳐 메서드가 어디서 오는지 추적
+- **`instanceof` 동작 이해**: `a instanceof B`는 `B.prototype`이 a의 체인에 있는지 검사
+- **프로토타입 없는 딕셔너리**: 키 충돌이 걱정되는 맵
+
+```js
+const dict = Object.create(null)
+dict["toString"] = 1 // Object.prototype 간섭 없음
+"constructor" in dict // false
+```
+
+- **라이브러리 확장 시 주의 판단**: 내장 프로토타입을 건드려도 되는지 결정
+
+## 흔한 오해와 함정
+
+### 1. 프로토타입에 참조 타입을 두면 공유된다
+
+```js
+// 수정 전
+function Cart() {}
+Cart.prototype.items = []
+
+const a = new Cart()
+const b = new Cart()
+a.items.push("호텔")
+b.items // ["호텔"] — 공유됨
+```
+
+```js
+// 수정 후
+function Cart() {
+  this.items = [] // 인스턴스마다 자기 것
+}
+```
+
+`a.items`는 **읽기**이므로 체인을 타고 올라가 프로토타입의 배열을 찾고, `push`는 그 배열을 변경합니다. 쓰기는 자기 자신에 생기는데, 이 경우는 쓰기가 아니라 **읽은 객체의 변경**이라 섀도잉이 일어나지 않습니다.
+
+### 2. for...in은 체인까지 순회한다
+
+`for...in`은 상속된 enumerable 프로퍼티까지 돕니다. 자기 프로퍼티만 원하면 `Object.keys`나 `Object.hasOwn(obj, key)`를 씁니다.
+
+### 3. `Object.setPrototypeOf`는 비싸다
+
+생성 후에 프로토타입을 바꾸면 엔진의 최적화 가정이 깨져 해당 객체가 느려질 수 있습니다. 필요하면 `Object.create(proto)`로 처음부터 연결하세요.
+
+### 4. 내장 프로토타입 수정
+
+`Array.prototype.last = ...` 같은 확장은 이름 충돌과 미래 표준과의 충돌 위험이 있고, `for...in` 순회에도 노출됩니다. 실제로 과거 `Array.prototype.flatten` 이름 충돌 사례(MooTools)로 표준 이름이 `flat`이 된 일이 있습니다.
+
+### 5. 화살표 함수에는 prototype이 없다
+
+화살표 함수는 `.prototype`이 없어 `new`로 호출할 수 없습니다. 생성자로 쓸 함수에는 쓰지 않습니다.
+
+## 정리
+
+프로토타입 체인의 핵심은 **"상속은 복사가 아니라, 못 찾으면 위쪽 객체에 묻는 위임"**이라는 점입니다.
+
+읽기는 체인을 따라 올라가고 쓰기는 자기 자신에 생긴다는 비대칭만 기억하면, 공유 상태 버그와 `class`의 실제 동작이 대부분 설명됩니다. 다음에 메서드가 어디서 오는지 헷갈리면 콘솔에서 `[[Prototype]]`을 한 단계씩 따라 올라가 보세요.
