@@ -1,0 +1,183 @@
+---
+title: "Promise 내부 동작: 상태 머신과 마이크로태스크 큐로 보는 then 체인"
+date: "2026-10-29"
+category: "typescript"
+excerpt: "Promise는 콜백 지옥을 예쁘게 포장한 문법이 아니라, 제어권 역전 문제를 해결하기 위한 상태 머신입니다. 상태 전이, then 체인, 마이크로태스크 스케줄링 순서를 내부 관점에서 풀어봅니다."
+tags: ["JavaScript", "Promise", "Microtask", "비동기"]
+readingTime: 7
+---
+
+## Promise가 존재하는 이유
+
+콜백 방식의 진짜 문제는 들여쓰기가 아닙니다. **제어권 역전(Inversion of Control)** 입니다.
+
+```javascript
+// 결제 라이브러리에 콜백을 넘기는 순간, 호출 시점과 횟수는 내 손을 떠난다
+paymentSdk.charge(order, (err, result) => {
+  completeOrder(result);
+});
+```
+
+이 콜백이 두 번 호출될 수도 있고, 한 번도 호출되지 않을 수도 있고, 동기로 호출될 수도 있습니다. 여행 예약처럼 "중복 결제"가 치명적인 도메인에서는 이 불확실성 자체가 리스크입니다.
+
+Promise는 이 제어권을 되돌려받는 방법입니다. 콜백을 **넘기는** 대신, 결과를 담은 **객체를 돌려받고** 내가 거기에 구독합니다. 그리고 이 객체는 몇 가지 보장을 합니다.
+
+- 결과는 **단 한 번만** 확정된다
+- 확정된 뒤에는 **절대 바뀌지 않는다**
+- 구독 콜백은 **항상 비동기로** 호출된다
+
+> Promise의 본질은 문법이 아니라 "한 번만 확정되는 값"에 대한 계약이다.
+
+## 내부 동작 방식
+
+### 상태 머신
+
+Promise는 세 상태를 가진 단순한 상태 머신입니다.
+
+```
+            resolve(value)
+         ┌──────────────────▶ fulfilled
+pending ─┤
+         └──────────────────▶ rejected
+            reject(reason)
+```
+
+`pending`에서 나갈 수 있는 경로는 한 번뿐이고, 한 번 나가면 끝입니다. `resolve`를 두 번 호출해도 두 번째는 조용히 무시됩니다. 앞서 말한 "단 한 번" 보장은 이 구조에서 나옵니다.
+
+내부적으로는 대략 다음 슬롯을 가진 객체로 볼 수 있습니다.
+
+```javascript
+// 개념 모델 (실제 엔진 구현이 아니라 스펙의 내부 슬롯을 단순화한 것)
+{
+  [[PromiseState]]: "pending",
+  [[PromiseResult]]: undefined,
+  [[PromiseFulfillReactions]]: [],  // then(onFulfilled)로 등록된 것들
+  [[PromiseRejectReactions]]: [],   // then(_, onRejected)로 등록된 것들
+}
+```
+
+### then은 무엇을 하는가
+
+`then`을 호출하면 두 가지가 일어납니다.
+
+1. 핸들러를 reaction 목록에 등록한다 (이미 확정된 상태라면 곧바로 잡(job) 큐에 넣는다)
+2. **새로운 Promise를 만들어 반환한다**
+
+두 번째가 체이닝의 핵심입니다. `then`은 같은 Promise를 돌려주는 게 아니라, 핸들러의 결과로 확정될 **다른 Promise**를 돌려줍니다.
+
+```javascript
+const p1 = fetchUser();
+const p2 = p1.then(user => user.id);   // p2는 p1과 별개의 Promise
+```
+
+핸들러가 값을 반환하면 p2는 그 값으로 fulfilled, 예외를 던지면 rejected가 됩니다. 핸들러가 **Promise를 반환하면** p2는 그 Promise의 상태를 따라갑니다(thenable 흡수). 에러 처리가 체인 아래로 전파되는 것도 같은 원리입니다. `onRejected`가 없는 `then`은 거절 사유를 그대로 p2에 넘겨줄 뿐입니다.
+
+### 핸들러는 마이크로태스크로 실행된다
+
+Promise가 확정되면 등록된 핸들러는 즉시 실행되지 않고 **마이크로태스크 큐**에 들어갑니다. 현재 콜 스택이 완전히 비면 매크로태스크(렌더링, 타이머 콜백 등)로 넘어가기 전에 큐를 모두 비웁니다.
+
+```javascript
+console.log("1");
+setTimeout(() => console.log("2"), 0);
+Promise.resolve().then(() => console.log("3"));
+console.log("4");
+// 1 → 4 → 3 → 2
+```
+
+이미 resolve된 Promise에 `then`을 걸어도 핸들러는 동기로 실행되지 않습니다. "구독 콜백은 항상 비동기"라는 보장은 이렇게 지켜집니다. 콜백 방식의 Zalgo(동기/비동기가 섞이는 문제)를 구조적으로 차단하는 것입니다.
+
+### 체인의 실행 순서
+
+마이크로태스크는 큐이기 때문에, 여러 체인이 있을 때 **라운드 로빈**처럼 번갈아 진행됩니다.
+
+```javascript
+Promise.resolve()
+  .then(() => console.log("A1"))
+  .then(() => console.log("A2"));
+
+Promise.resolve()
+  .then(() => console.log("B1"))
+  .then(() => console.log("B2"));
+// A1 → B1 → A2 → B2
+```
+
+A1이 끝나야 A2가 큐에 들어가기 때문에, 그 사이에 B1이 먼저 실행됩니다.
+
+## 실제로 언제 쓰는가
+
+### 병렬 실행과 조합
+
+내부 모델을 알면 `Promise.all` 계열의 차이도 "완료 조건"으로 정리됩니다.
+
+| | 확정 조건 | 실패 시 |
+|---|---|---|
+| `all` | 모두 fulfilled | 첫 rejection 즉시 reject |
+| `allSettled` | 모두 확정 | 절대 reject 안 함 |
+| `race` | 가장 먼저 확정된 것 | 첫 확정이 rejection이면 reject |
+| `any` | 가장 먼저 fulfilled | 전부 rejected면 AggregateError |
+
+예를 들어 숙소 목록과 항공권 목록을 동시에 조회하되 한쪽 실패가 전체 화면을 막으면 안 되는 상황이라면 `allSettled`가 맞습니다.
+
+```javascript
+const [hotels, flights] = await Promise.allSettled([
+  fetchHotels(query),
+  fetchFlights(query),
+]);
+```
+
+### 직접 `new Promise`를 쓰는 경우
+
+콜백 기반 API를 감쌀 때만 씁니다. 이미 Promise를 반환하는 함수를 `new Promise` 안에서 다시 감싸는 것(Promise 생성자 안티패턴)은 에러 전파 경로만 늘립니다.
+
+## 흔한 오해와 함정
+
+### 1. then 안에서 return을 빼먹는다
+
+```javascript
+// 수정 전: 체인이 끊긴다
+getUser()
+  .then(user => {
+    getOrders(user.id);      // return 없음
+  })
+  .then(orders => {
+    console.log(orders);     // undefined, 그리고 getOrders는 기다려주지 않는다
+  });
+
+// 수정 후
+getUser()
+  .then(user => getOrders(user.id))
+  .then(orders => console.log(orders));
+```
+
+두 번째 `then`이 받는 값은 첫 핸들러의 반환값으로 확정된 Promise의 결과입니다. 반환이 없으면 `undefined`로 즉시 확정됩니다.
+
+### 2. then(a, b)와 then(a).catch(b)는 다르다
+
+```javascript
+promise.then(onFulfilled, onRejected);
+promise.then(onFulfilled).catch(onRejected);
+```
+
+앞의 형태에서는 `onFulfilled` 내부에서 던진 에러를 `onRejected`가 **잡지 못합니다**. 같은 `then`이 만든 Promise의 reaction이기 때문입니다. 뒤의 형태는 `onFulfilled`의 에러까지 잡습니다.
+
+### 3. resolve 안에 Promise를 넘기면 틱이 더 든다
+
+```javascript
+new Promise(resolve => resolve(Promise.resolve("v")));
+```
+
+값이 아니라 thenable을 `resolve`하면 엔진은 그 thenable의 `then`을 호출하는 **추가 잡**을 큐에 넣고, 거기서 다시 확정 잡이 한 번 더 생깁니다. 그래서 일반 값보다 마이크로태스크 틱이 늦게 확정됩니다. 순서에 의존하는 코드가 있다면 이 차이가 드러납니다. 다만 이 순서에 기대는 설계 자체를 피하는 편이 안전합니다.
+
+### 4. 처리되지 않은 rejection
+
+rejection 핸들러가 없는 채로 마이크로태스크 처리가 끝나면 호스트가 `unhandledrejection`을 알립니다. Node.js는 기본 설정에서 프로세스를 종료시키고, 브라우저는 콘솔에 에러를 남깁니다. 또한 Promise를 만들어 놓고 `await`/`catch` 없이 던져두는 "fire and forget"은 에러가 조용히 사라지는 게 아니라 전역 이벤트로 새어 나갑니다.
+
+### 5. Promise는 취소할 수 없다
+
+상태 머신에는 "cancelled"가 없습니다. 이미 시작된 작업은 Promise로 멈출 수 없고, 취소가 필요하면 `AbortController`를 작업 자체에 전달해야 합니다. 검색 자동완성에서 이전 요청의 응답이 늦게 도착해 화면을 덮어쓰는 버그가 대표적입니다.
+
+## 정리
+
+Promise의 핵심은 **"한 번만 확정되고, 항상 비동기로 알려주는 값"** 이라는 계약입니다. `then`은 새 Promise를 만들고, 핸들러는 마이크로태스크로 실행된다는 두 가지만 기억하면 체인 순서, 에러 전파, `async/await`의 동작까지 같은 모델로 설명됩니다.
+
+실행 순서가 예상과 다를 때는 코드를 다시 읽기보다 "지금 마이크로태스크 큐에 무엇이 어떤 순서로 들어 있는가"를 그려 보세요. 다음 글에서는 이 모델 위에서 `async/await`가 어떻게 변환되는지 이어서 다룹니다.
