@@ -1,0 +1,168 @@
+---
+title: "JS: call, apply, bind — this를 직접 지정한다는 것의 진짜 의미"
+date: "2026-11-02"
+category: "typescript"
+excerpt: "call/apply/bind는 '함수를 다른 객체의 메서드처럼 호출하는 도구'가 아니라, 함수 호출 시점에 결정되는 this 바인딩을 명시적으로 덮어쓰기 위한 장치입니다. 내부에서 무엇이 일어나는지와 bind가 만드는 bound function의 특성까지 파헤칩니다."
+tags: ["JavaScript", "this", "bind", "Function.prototype"]
+readingTime: 7
+---
+
+## call, apply, bind가 존재하는 이유
+
+JavaScript에서 `this`는 함수가 **어디서 정의됐는가**가 아니라 **어떻게 호출됐는가**로 결정됩니다. `obj.method()`로 부르면 `this`는 `obj`지만, 같은 함수를 변수에 담아 `fn()`으로 부르면 `this`는 `undefined`(strict mode) 혹은 전역 객체가 됩니다.
+
+```js
+const user = { name: "mimi", hello() { return this.name; } };
+const fn = user.hello;
+
+user.hello(); // "mimi"
+fn();         // undefined (strict) — 메서드가 객체에서 '분리'됐기 때문
+```
+
+이 규칙은 유연하지만, 콜백으로 메서드를 넘기는 순간 `this`를 잃는다는 문제를 낳습니다. 그래서 언어는 **호출 시점의 `this`를 호출하는 쪽이 직접 정하는 수단**을 제공합니다. 그게 `Function.prototype`에 있는 세 메서드입니다.
+
+> 세 메서드는 "this를 바꾼다"가 아니라 "이번 호출의 this를 내가 정한다"입니다.
+
+## 내부 동작 방식
+
+### call과 apply: 즉시 실행되는 호출
+
+스펙 관점에서 `fn.call(thisArg, a, b)`는 `fn`의 `[[Call]]` 내부 메서드를 `this = thisArg`, 인자 `[a, b]`로 곧바로 실행합니다. `apply`는 인자를 배열(유사 배열)로 받을 뿐 동작은 같습니다.
+
+```js
+fn.call(ctx, a, b);
+fn.apply(ctx, [a, b]);
+```
+
+차이는 인자 전달 방식 하나입니다. spread 문법이 생긴 지금은 `fn.call(ctx, ...args)`로 충분해서 `apply`를 쓸 이유가 많이 줄었습니다.
+
+흥미로운 점은 non-strict 함수에서의 `thisArg` 처리입니다.
+
+| thisArg | strict mode | non-strict mode |
+|---|---|---|
+| `null` / `undefined` | 그대로 | 전역 객체로 치환 |
+| 원시값 (`1`, `"a"`) | 그대로 | 래퍼 객체(`Number`, `String`)로 박싱 |
+
+모듈과 클래스 본문은 항상 strict이므로 요즘 코드에서는 "그대로 전달"된다고 생각해도 됩니다.
+
+### bind: 호출하지 않고 '묶인 함수'를 만든다
+
+`bind`는 실행하지 않고 **bound function exotic object**를 새로 만듭니다. 이 객체는 내부 슬롯 세 개를 갖습니다.
+
+```
+[[BoundTargetFunction]] : 원본 함수
+[[BoundThis]]           : 고정된 this
+[[BoundArguments]]      : 미리 채워진 인자 목록
+```
+
+bound function이 호출되면 `[[BoundArguments]]` 뒤에 새 인자를 이어 붙여 원본을 `[[BoundThis]]`로 호출합니다. 대략 이런 폴리필과 같습니다.
+
+```js
+function myBind(fn, thisArg, ...preset) {
+  return function (...rest) {
+    return fn.apply(thisArg, [...preset, ...rest]);
+  };
+}
+```
+
+실제 구현과 다른 점은 두 가지입니다. bound function은 `prototype` 프로퍼티가 없고, `new`로 호출하면 **`[[BoundThis]]`가 무시되고** 새로 만든 인스턴스가 `this`가 됩니다.
+
+```js
+function Point(x, y) { this.x = x; this.y = y; }
+const Bound = Point.bind({ ignored: true }, 1);
+const p = new Bound(2);
+
+p.x; // 1
+p.y; // 2
+p instanceof Point; // true — 바인딩한 this는 버려졌다
+```
+
+## 실제로 언제 쓰는가
+
+### 1. 인자 부분 적용 (partial application)
+
+`this`가 필요 없어도 `bind`는 인자를 미리 채우는 용도로 쓸 수 있습니다.
+
+```js
+const post = (method, url, body) => fetch(url, { method, body });
+const postJSON = post.bind(null, "POST");
+```
+
+### 2. 유사 배열에 배열 메서드 빌려 쓰기
+
+```js
+Array.prototype.slice.call(arguments);
+// 요즘은 Array.from(arguments) 또는 rest 파라미터로 대체
+```
+
+### 3. 클래스 메서드를 콜백으로 넘길 때
+
+```js
+class Cart {
+  items = [];
+  add(item) { this.items.push(item); }
+}
+const cart = new Cart();
+
+button.addEventListener("click", cart.add);              // this = button → 버그
+button.addEventListener("click", cart.add.bind(cart));   // OK
+button.addEventListener("click", (e) => cart.add(e));    // 화살표 함수로도 가능
+```
+
+React 클래스 컴포넌트 시절 생성자에서 `this.handle = this.handle.bind(this)`를 하던 이유가 정확히 이것입니다. 함수 컴포넌트가 주류가 된 지금은 `this` 자체를 쓸 일이 줄었지만, 클래스 기반 라이브러리나 DOM 이벤트 코드를 만질 때는 여전히 마주칩니다.
+
+### 쓰지 않아도 되는 경우
+
+- 화살표 함수로 충분한 콜백 (렉시컬 `this`)
+- 단순히 인자를 펼쳐 호출하고 싶을 때 (`spread` 사용)
+- 객체를 넘기면 되는 상황 (`this`에 의존하지 않도록 설계 변경)
+
+## 흔한 오해와 함정
+
+### 함정 1: 화살표 함수에는 call/apply/bind의 this가 먹히지 않는다
+
+화살표 함수는 자기만의 `this` 바인딩이 없고 정의된 스코프의 `this`를 캡처합니다. `thisArg`는 **무시**됩니다. 에러도 안 나서 더 위험합니다.
+
+```js
+const arrow = () => this;
+arrow.call({ a: 1 }); // 여전히 바깥 스코프의 this
+```
+
+인자는 정상적으로 전달되므로 "this만 조용히 무시된다"는 점을 기억해야 합니다.
+
+### 함정 2: bind는 한 번만 먹는다
+
+```js
+function who() { return this.name; }
+const a = who.bind({ name: "A" });
+const b = a.bind({ name: "B" });
+b(); // "A"
+```
+
+`b`가 감싼 대상은 이미 `[[BoundThis]]`가 고정된 `a`입니다. 바깥에서 다시 bind해도 안쪽 바인딩이 이깁니다. `call`로 덮어쓰려 해도 마찬가지입니다.
+
+### 함정 3: bind는 매번 새 함수를 만든다
+
+```js
+// 매 렌더링/호출마다 새로운 함수 참조
+el.addEventListener("click", this.onClick.bind(this));
+el.removeEventListener("click", this.onClick.bind(this)); // 제거 실패
+```
+
+`removeEventListener`는 참조 동일성으로 비교하므로, 같은 리스너를 제거하려면 bound function을 변수에 저장해야 합니다. React에서 props로 bind 결과를 내려 `React.memo`를 무력화하는 문제도 같은 원리입니다.
+
+### 함정 4: this 우선순위
+
+여러 규칙이 겹칠 때의 순서는 다음과 같습니다.
+
+```
+new 바인딩 > 명시적 바인딩(bind/call/apply) > 암시적 바인딩(obj.fn()) > 기본 바인딩
+```
+
+단, 이미 bind된 함수에 `call`을 쓰면 위 함정 2처럼 bind가 이깁니다. "명시적 바인딩끼리"는 bind가 가장 강합니다.
+
+## 정리
+
+call/apply/bind의 핵심은 **"this는 호출 시점에 정해지며, 이 세 메서드는 그 결정권을 호출하는 쪽으로 가져온다"** 입니다.
+
+즉시 실행이 필요하면 `call`(또는 spread), 나중에 실행할 함수에 `this`나 인자를 고정하려면 `bind`를 씁니다. 다만 화살표 함수나 `this` 의존을 없애는 설계로 해결되는 상황이라면 굳이 쓰지 않는 편이 더 단순합니다.
