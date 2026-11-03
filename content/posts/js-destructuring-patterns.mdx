@@ -1,0 +1,184 @@
+---
+title: "JS: 구조분해할당 — 문법 설탕 아래에서 일어나는 일"
+date: "2026-11-03"
+category: "typescript"
+excerpt: "구조분해할당은 '값을 꺼내는 축약 문법'이 아니라 이터러블 프로토콜과 프로퍼티 접근([[Get]])을 패턴으로 선언하는 장치입니다. 기본값이 평가되는 시점, null에서 터지는 이유, 중첩 패턴의 함정까지 내부 동작 기준으로 정리합니다."
+tags: ["JavaScript", "destructuring", "iterator", "ES6"]
+readingTime: 7
+---
+
+## 구조분해할당이 존재하는 이유
+
+ES6 이전에는 객체에서 값을 꺼내려면 접근 코드를 줄줄이 써야 했습니다.
+
+```js
+var host = config.server.host;
+var port = config.server.port;
+var first = list[0];
+var second = list[1];
+```
+
+문제는 길이만이 아니었습니다. **"이 데이터가 어떤 모양일 것이다"라는 기대가 코드 곳곳에 흩어진다**는 점이 더 컸습니다. 함수 인자로 옵션 객체를 받을 때도 `options.timeout || 3000` 같은 방어 코드가 본문 첫 줄을 차지했습니다.
+
+구조분해는 이 기대를 **패턴 하나로 선언**하게 해줍니다. 대입문의 왼쪽이 "값의 모양"을 서술하고, 엔진이 그 모양에 맞춰 값을 꺼냅니다.
+
+> 구조분해는 "꺼내는 문법"이 아니라 "모양을 선언하는 문법"입니다.
+
+## 내부 동작 방식
+
+### 객체 패턴: 프로퍼티 [[Get]]의 나열
+
+```js
+const { host, port } = config.server;
+```
+
+스펙상 이 코드는 대략 아래와 같습니다.
+
+```js
+const _src = config.server;
+RequireObjectCoercible(_src); // null/undefined면 여기서 TypeError
+const host = _src.host;       // [[Get]]
+const port = _src.port;       // [[Get]]
+```
+
+핵심은 두 가지입니다.
+
+1. 원본이 `null`/`undefined`면 **패턴 평가 이전에** `TypeError`가 납니다.
+2. 각 프로퍼티는 일반 프로퍼티 접근이므로 **getter가 실제로 실행**되고, 프로토타입 체인도 탐색됩니다. 원시값(`"abc"`, `123`)은 래퍼 객체로 변환된 뒤 접근합니다. 그래서 `const { length } = "abc"`가 동작합니다.
+
+### 배열 패턴: 인덱스가 아니라 이터레이터
+
+많이들 오해하는 지점입니다. 배열 구조분해는 `arr[0]`, `arr[1]`이 아닙니다.
+
+```js
+const [a, b] = source;
+```
+
+```js
+const it = source[Symbol.iterator]();
+const a = it.next().value;
+const b = it.next().value;
+// 패턴이 끝났는데 it이 done이 아니면 it.return?.() 호출
+```
+
+그래서 배열뿐 아니라 `Set`, `Map`, 제너레이터, 문자열 등 **이터러블이면 무엇이든** 분해됩니다. 반대로 이터러블이 아닌 일반 객체는 `TypeError: source is not iterable`이 납니다.
+
+```js
+const [x, y] = new Set([1, 2, 3]); // x=1, y=2
+const [p] = { 0: "a" };            // TypeError — 유사 배열이어도 이터러블이 아님
+```
+
+패턴이 필요한 만큼만 `next()`를 호출한다는 점도 중요합니다. 무한 제너레이터에서 앞 2개만 꺼내도 멈추는 이유입니다. 다 안 쓰고 끝나면 `return()`이 호출되어 **정리 로직(finally)이 실행**됩니다.
+
+### 기본값: 평가 시점은 "값이 undefined일 때"
+
+```js
+const { timeout = getDefaultTimeout() } = options;
+```
+
+기본값 표현식은 **해당 값이 `undefined`일 때만, 그 순간에 평가**됩니다(지연 평가). 즉 `getDefaultTimeout()`은 `options.timeout`이 있으면 호출되지 않습니다.
+
+여기서 `||`와 결정적으로 다릅니다.
+
+| 입력값 | `v = x \|\| 10` | `{ v = 10 } = { v: x }` |
+|---|---|---|
+| `undefined` | 10 | 10 |
+| `null` | 10 | **null** |
+| `0` | 10 | **0** |
+| `""` | 10 | **""** |
+
+기본값은 오직 `undefined`에만 반응합니다. `null`은 "명시적으로 비어 있음"이라는 값으로 취급되어 그대로 통과합니다.
+
+## 실제로 언제 쓰는가
+
+### 함수 인자에서 옵션 객체 받기
+
+```js
+function fetchHotels({ city, checkIn, nights = 1, sort = "price" } = {}) {
+  // ...
+}
+```
+
+마지막 `= {}`가 핵심입니다. 이게 없으면 `fetchHotels()`처럼 인자 없이 호출할 때 `undefined`를 분해하려다 `TypeError`가 납니다. **"패턴에 기본값"과 "패턴 전체에 기본값"은 다른 층위**입니다.
+
+### 이름 바꾸기와 계산된 키
+
+```js
+const { data: hotels, error: fetchError } = result;
+
+const key = "price";
+const { [key]: value } = item;
+```
+
+API 응답에서 `data`, `error` 같은 흔한 이름이 충돌할 때 `:`로 로컬 이름을 바꿔 꺼냅니다. 콜론 왼쪽이 **프로퍼티 이름**, 오른쪽이 **변수 이름**입니다.
+
+### 값 교환과 반환값 해체
+
+```js
+[a, b] = [b, a];
+
+const [state, setState] = useState(0);
+```
+
+`useState`가 객체가 아닌 튜플을 반환하는 이유도 여기 있습니다. **배열 패턴은 호출자가 이름을 자유롭게 정할 수 있고**, 객체 패턴은 이름이 API의 일부가 됩니다. 한 번만 쓰는 값이면 객체, 같은 훅을 여러 번 쓰는 값이면 배열이 자연스럽습니다.
+
+## 흔한 오해와 함정
+
+### 1. 문장 맨 앞의 `{`는 블록이다
+
+```js
+let host;
+{ host } = config; // SyntaxError — 블록 문으로 파싱됨
+
+({ host } = config); // OK — 괄호로 표현식으로 만든다
+```
+
+### 2. 기본값은 null을 구해주지 않는다
+
+```js
+const { name = "익명" } = { name: null };
+console.log(name); // null
+```
+
+서버 응답에서 `null`이 올 수 있다면 기본값 대신 `??`가 맞습니다.
+
+```js
+const { name: rawName } = user;
+const name = rawName ?? "익명";
+```
+
+### 3. 중첩 패턴은 중간 경로가 없으면 터진다
+
+```js
+// 수정 전
+const { address: { city } } = user; // user.address가 undefined면 TypeError
+
+// 수정 후
+const { address: { city } = {} } = user;
+```
+
+중첩 패턴의 `address`는 변수가 만들어지지 않고 **경로로만 쓰입니다.** `address` 자체가 필요하면 별도로 꺼내야 합니다. 경로가 3단계 이상 깊어지면 구조분해보다 옵셔널 체이닝이 의도를 더 잘 드러냅니다.
+
+### 4. 얕은 복사라는 사실
+
+```js
+const { items } = cart;
+items.push("new"); // cart.items도 바뀐다 — 같은 참조
+```
+
+구조분해는 값을 복사하지 않고 **참조를 꺼냅니다.** 나머지 프로퍼티를 `...rest`로 모아도 마찬가지로 얕은 복사입니다.
+
+### 5. 평가 순서는 왼쪽에서 오른쪽
+
+```js
+const { a = 1, b = a + 1 } = {}; // a=1, b=2
+const { c = d, d = 1 } = {};     // ReferenceError — d는 아직 TDZ
+```
+
+기본값 표현식은 앞서 선언된 변수를 참조할 수 있지만, 뒤에 선언될 변수는 TDZ에 걸립니다.
+
+## 정리
+
+구조분해의 본질은 **"객체는 프로퍼티 접근, 배열은 이터레이터 프로토콜로 값을 꺼내는 패턴 선언"** 입니다.
+
+함수 인자의 옵션 객체, 훅의 반환값, API 응답의 이름 정리처럼 **값의 모양에 대한 기대를 한 곳에 모으고 싶을 때** 쓰세요. 반대로 깊게 중첩된 선택적 경로나 `null`이 섞인 데이터라면 구조분해보다 `?.`와 `??`가 더 정직한 도구입니다.
