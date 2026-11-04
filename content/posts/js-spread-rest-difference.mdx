@@ -1,0 +1,133 @@
+---
+title: "JS: spread와 rest의 차이"
+date: "2026-11-04"
+category: "typescript"
+excerpt: "같은 `...` 문법이 위치에 따라 정반대 일을 하는 이유는 '펼치기'와 '모으기'가 대칭 연산이기 때문입니다. 이터러블 프로토콜과 얕은 복사까지 이해하면 spread가 만드는 함정이 보입니다."
+tags: ["JavaScript", "spread", "rest", "이터러블"]
+readingTime: 7
+---
+
+## spread와 rest가 존재하는 이유
+
+ES5까지 가변 인자는 `arguments`로, 배열 합치기는 `concat`으로, 함수 호출 시 배열 전개는 `apply`로 처리했습니다. 셋 다 **서로 다른 문법**이었고, 각각 한계가 있었습니다.
+
+- `arguments`는 유사 배열이라 `map`을 바로 못 씁니다. 화살표 함수에는 아예 없습니다.
+- `apply`는 `this` 자리를 채워야 해서 의도가 흐려집니다.
+- 객체 병합은 `Object.assign`으로 우회해야 했습니다.
+
+ES2015는 이 문제를 하나의 모양 `...`으로 묶었습니다. 핵심은 이 문법이 **대칭**이라는 점입니다.
+
+> 값 쪽(표현식)에서는 펼치고, 바인딩 쪽(패턴)에서는 모은다.
+
+`...`이 쓰인 곳이 값을 **만드는** 자리인지, 값을 **받는** 자리인지로 구분하면 됩니다. 이름이 둘인 이유가 이것입니다.
+
+## 내부 동작 방식
+
+### spread는 이터러블 프로토콜을 쓴다
+
+배열/함수 호출에서의 spread는 `Symbol.iterator`를 호출해 값을 하나씩 꺼내는 동작입니다.
+
+```javascript
+const arr = [...iterable];
+// 대략 이런 일이 일어난다
+const it = iterable[Symbol.iterator]();
+let r;
+while (!(r = it.next()).done) arr.push(r.value);
+```
+
+그래서 `Set`, `Map`, 문자열, 제너레이터는 펼쳐지지만 **일반 객체는 `[...obj]`가 TypeError**입니다. 이터러블이 아니기 때문입니다. 문자열 spread가 UTF-16 코드 단위가 아니라 코드 포인트 단위로 쪼개지는 것(`[..."😀"]`의 길이는 1)도 문자열의 이터레이터가 그렇게 정의돼 있어서입니다.
+
+### 객체 spread는 이터러블과 무관하다
+
+`{ ...obj }`는 이터레이터가 아니라 **own enumerable 프로퍼티**를 복사하는 별개 연산입니다(`CopyDataProperties`). 포인트는 세 가지입니다.
+
+- 자기 자신의 열거 가능한 프로퍼티만 복사 (프로토타입 체인은 무시)
+- Symbol 키도 복사
+- getter는 **호출된 결과값**이 복사되고, 접근자 속성 자체는 사라짐
+
+그래서 `Object.assign`과 비슷해 보이지만 차이가 있습니다. `Object.assign(target, src)`는 target의 **setter를 실행**하고, 객체 spread는 새 객체에 **정의(define)** 합니다.
+
+### rest는 남은 것을 새 배열/객체로 모은다
+
+rest는 구조분해 패턴의 마지막 자리에서 "남은 것"을 **새로 만든** 컨테이너에 담습니다.
+
+```javascript
+function f(a, ...rest) {} // rest는 진짜 Array
+const { id, ...others } = user; // others는 id를 제외한 own enumerable 복사본
+```
+
+rest 매개변수는 `arguments`와 달리 진짜 `Array`이고, 마지막 자리에만 올 수 있습니다. 뒤에 무엇이 더 올지 엔진이 알 수 없기 때문입니다.
+
+## 실제로 언제 쓰는가
+
+**spread**: 불변 업데이트, 인자 전개, 이터러블 → 배열 변환.
+
+```javascript
+const next = { ...state, user: { ...state.user, name } };
+Math.max(...scores);
+const unique = [...new Set(list)];
+```
+
+**rest**: 가변 인자와 "일부만 빼고 나머지 전달".
+
+```javascript
+// React 컴포넌트에서 내가 쓰는 props만 분리하고 나머지는 위임
+function Button({ variant, ...domProps }) {
+  return <button className={variant} {...domProps} />;
+}
+```
+
+OTA 서비스에서 폼 컴포넌트를 만들 때 가장 자주 쓰는 형태가 마지막 패턴입니다. 다만 `domProps`로 넘기는 props의 범위가 넓어질수록 어떤 속성이 DOM까지 내려가는지 추적이 어려워집니다.
+
+## 흔한 오해와 함정
+
+### 1. spread는 얕은 복사다
+
+```javascript
+const a = { nested: { count: 1 } };
+const b = { ...a };
+b.nested.count = 2;
+a.nested.count; // 2 — 같은 참조
+```
+
+1단계만 새로 만들고 중첩 객체는 참조를 공유합니다. 깊은 복사가 필요하면 `structuredClone`을 씁니다.
+
+### 2. 순서가 곧 우선순위다
+
+```javascript
+// 수정 전: 기본값이 사용자 값을 덮어씀
+const opts = { timeout: 3000, ...userOpts, retries: 3 };
+
+// 값을 덮어쓰게 하려는 의도라면 기본값을 앞에 둔다
+const defaults = { timeout: 3000, retries: 3 };
+const opts2 = { ...defaults, ...userOpts };
+```
+
+또한 `userOpts.timeout`이 `undefined`로 **명시**되어 있으면 기본값을 덮어써서 `undefined`가 됩니다. 기본값 병합에서 흔히 나는 버그입니다.
+
+### 3. 루프 안의 누적 spread는 O(n²)
+
+```javascript
+// 매 반복마다 배열 전체를 새로 복사
+const result = items.reduce((acc, x) => ({ ...acc, [x.id]: x }), {});
+
+// 하나만 만들고 채운다
+const result2 = {};
+for (const x of items) result2[x.id] = x;
+```
+
+항목이 수천 개를 넘으면 체감됩니다.
+
+### 4. 큰 배열을 함수 인자로 spread하면 스택이 터진다
+
+`Math.max(...hugeArray)`는 인자가 호출 스택에 올라가므로 엔진별 한계(대략 수만~수십만 개)를 넘으면 `RangeError`가 납니다. 큰 배열은 `reduce`나 반복문을 사용하세요.
+
+### 5. rest는 프로토타입과 getter를 잃는다
+
+클래스 인스턴스에 `{ ...instance }`나 `const { a, ...rest } = instance`를 쓰면 **메서드(프로토타입에 있음)** 는 복사되지 않고 일반 객체가 됩니다. 인스턴스를 복제하려는 용도로는 쓰면 안 됩니다.
+
+## 정리
+
+spread와 rest는 같은 `...`이지만 **값 자리에서는 펼치고, 패턴 자리에서는 모으는** 대칭 연산이며, 둘 다 얕은 복사라는 점이 핵심입니다.
+
+불변 업데이트와 props 위임에는 적극 쓰되, 중첩 구조·루프 누적·클래스 인스턴스에서는 복사의 깊이와 비용을 먼저 의심하세요.
