@@ -1,0 +1,164 @@
+---
+title: "JS: 옵셔널 체이닝과 nullish coalescing — || 와 && 가 못 하던 일"
+date: "2026-11-05"
+category: "typescript"
+excerpt: "?.와 ??는 단순한 문법 설탕이 아니라, '값이 없음(null/undefined)'과 '값이 falsy함'을 언어 차원에서 구분하기 위해 도입됐습니다. 단축 평가(short-circuit)가 어디까지 번지는지, || 기본값이 왜 버그를 만드는지 내부 동작부터 짚습니다."
+tags: ["JavaScript", "Optional Chaining", "Nullish Coalescing", "ES2020"]
+readingTime: 7
+---
+
+## 옵셔널 체이닝과 ??가 존재하는 이유
+
+ES2020 이전에는 깊은 프로퍼티 접근을 방어하려고 이런 코드를 썼습니다.
+
+```javascript
+const city = user && user.address && user.address.city;
+const count = options.count || 10;
+```
+
+둘 다 동작하는 것처럼 보이지만, 근본적인 결함이 있습니다. `&&`와 `||`는 **truthy/falsy**로 판단합니다. 우리가 실제로 묻고 싶은 건 "값이 **없는가**(null/undefined)"인데, 언어가 제공하는 도구는 "값이 **거짓처럼 보이는가**"였습니다.
+
+- `options.count`가 `0`이면? `||` 때문에 10이 됩니다.
+- `user.nickname`이 빈 문자열 `""`이면? 기본값으로 덮어써집니다.
+- `a && a.b`에서 `a`가 `0`이나 `""`이면 `undefined`가 아니라 `0`/`""` 자체가 반환됩니다.
+
+> 존재하지 않음(nullish)과 거짓(falsy)은 다른 개념이다.
+
+`?.`와 `??`는 이 둘을 분리하기 위해 들어왔습니다. nullish는 정확히 `null`과 `undefined` 두 값뿐입니다.
+
+## 내부 동작 방식
+
+### ?.는 "그 자리에서 멈추는" 단축 평가
+
+`a?.b`는 대략 다음과 같이 풀립니다.
+
+```javascript
+// a?.b 의 의미 (개념적 디슈가링)
+a === null || a === undefined ? undefined : a.b
+```
+
+중요한 건 **전체 체인이 단락(short-circuit)된다**는 점입니다.
+
+```javascript
+a?.b.c.d()
+// a가 nullish면 .b.c.d() 전체를 평가하지 않고 undefined 반환
+// a가 있고 a.b가 undefined라면? → 여기서는 TypeError (b 뒤에는 ?.가 없으므로)
+```
+
+`?.`는 **바로 왼쪽 값**만 검사합니다. 오른쪽에 이어지는 체인은 왼쪽이 nullish일 때만 통째로 건너뜁니다. 그래서 "`?.` 한 번 쓰면 안전하다"는 건 오해입니다.
+
+### 세 가지 형태
+
+```javascript
+obj?.prop        // 프로퍼티 접근
+obj?.[expr]      // 계산된 키 접근
+fn?.(args)       // 함수 호출 — fn이 nullish면 호출 자체를 건너뜀
+```
+
+`fn?.()`은 인자 평가도 건너뜁니다. `fn?.(sideEffect())`에서 `fn`이 undefined라면 `sideEffect()`는 실행되지 않습니다.
+
+### ??는 왼쪽이 nullish일 때만 오른쪽을 평가
+
+```javascript
+a ?? b
+// a !== null && a !== undefined ? a : b
+```
+
+`||`와 달리 `0`, `""`, `false`, `NaN`은 그대로 통과합니다. 또한 `??`는 단축 평가이므로 오른쪽 식은 필요할 때만 평가됩니다.
+
+### 연산자 우선순위 제약
+
+`??`는 `||`, `&&`와 **괄호 없이 섞어 쓸 수 없습니다.** 문법 오류(SyntaxError)입니다.
+
+```javascript
+a || b ?? c      // SyntaxError
+(a || b) ?? c    // OK
+```
+
+우선순위가 모호해서 의도를 오해하기 쉽기 때문에, 명세에서 아예 금지했습니다. 설계 철학이 "헷갈릴 수 있으면 막는다"인 셈입니다.
+
+## 실제로 언제 쓰는가
+
+### 외부 데이터의 불확실한 구조
+
+API 응답처럼 구조를 통제할 수 없는 곳에서 가장 유용합니다.
+
+```javascript
+// 호텔 검색 응답에서 최저가를 꺼내는 경우
+const price = response.data?.hotels?.[0]?.rooms?.[0]?.price ?? null;
+```
+
+### 선택적 콜백
+
+```javascript
+function Button({ onClick }) {
+  return <button onClick={(e) => onClick?.(e)} />;
+}
+```
+
+### 0이 유효한 기본값 처리
+
+```javascript
+// 수량, 인덱스, 가격처럼 0이 정상 값인 경우
+const adults = params.adults ?? 1;   // adults=0 이 와도 1로 덮어쓰지 않음
+```
+
+### 쓰지 않아야 할 때
+
+- **필수 값**에 `?.`를 남발하면 버그를 조용히 삼킵니다. 있어야 하는 값이 없을 때는 에러가 나는 편이 낫습니다.
+- 타입이 이미 non-null로 보장된 곳(`user.id` 등)에 방어적으로 붙이면 코드만 노이즈가 됩니다.
+- 빈 문자열/0/false를 "값 없음"으로 **의도적으로** 취급하려는 경우는 `||`가 맞습니다. (예: 빈 입력을 placeholder로 대체)
+
+## 흔한 오해와 함정
+
+### 1. ||를 ??로 기계적으로 치환
+
+```javascript
+// 수정 전: 빈 문자열이면 기본값을 쓰고 싶었던 경우
+const label = input.value || "미입력";
+
+// 수정 후(의도 변경): 빈 문자열이 그대로 통과
+const label = input.value ?? "미입력";  // "" 이면 "" 이 나온다
+```
+
+폼 입력값은 비어 있어도 `""`이지 `undefined`가 아닙니다. 어느 쪽이 의도인지 구분해서 써야 합니다.
+
+### 2. ?.는 에러를 막아주는 만능 방패가 아니다
+
+```javascript
+user?.profile.name
+// user가 null → undefined (안전)
+// user는 있는데 profile이 undefined → TypeError!
+```
+
+체인 중 null이 될 수 있는 **모든 지점**에 `?.`가 필요합니다. 반대로 모든 점에 붙이면 설계 의도가 흐려집니다.
+
+### 3. 할당에는 쓸 수 없다
+
+```javascript
+user?.name = "kim";  // SyntaxError
+```
+
+옵셔널 체이닝은 읽기 전용입니다. 존재 여부가 불확실한 곳에 쓰기를 한다는 건 설계 문제이기도 합니다. 대신 논리 할당 연산자 `??=`를 쓸 수 있습니다.
+
+```javascript
+options.timeout ??= 3000;  // nullish일 때만 대입
+```
+
+### 4. 반환값이 undefined로 합쳐진다
+
+```javascript
+const v = obj?.value;
+```
+
+`obj`가 없어서 `undefined`인지, `obj.value`가 원래 `undefined`인지 구분할 수 없습니다. 둘을 구분해야 한다면 `in` 연산자나 명시적 null 체크가 필요합니다.
+
+### 5. delete와 함께 쓰면
+
+`delete obj?.prop`은 가능합니다. `obj`가 nullish면 `true`를 반환하고 아무것도 하지 않습니다. 의외로 허용되는 예외입니다.
+
+## 정리
+
+`?.`와 `??`의 핵심은 **"값이 없음(null/undefined)과 값이 거짓임(falsy)을 구분한다"** 는 것입니다.
+
+기본값은 `??`, 안전한 접근은 `?.` — 단, 필수 값에는 쓰지 않고, 체인 중간 어디가 null이 될 수 있는지 먼저 따져본 뒤 그 지점에만 붙이세요. 오늘 코드에서 `|| 기본값` 패턴을 하나만 골라, 0이나 `""`이 들어오면 어떻게 되는지 확인해 보시길 권합니다.
