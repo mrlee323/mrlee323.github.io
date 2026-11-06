@@ -1,0 +1,152 @@
+---
+title: "ESM vs CommonJS: 같은 import인데 왜 동작이 다를까"
+date: "2026-11-06"
+category: "typescript"
+excerpt: "CommonJS는 '실행되는 함수'이고 ESM은 '분석되는 선언'입니다. 이 차이가 라이브 바인딩, 순환 참조, 트리 셰이킹, Next.js 번들링에서 왜 다른 결과를 만드는지 내부 동작부터 짚어봅니다."
+tags: ["JavaScript", "ESM", "CommonJS", "Module", "Bundler"]
+readingTime: 7
+---
+
+## 두 모듈 시스템이 존재하는 이유
+
+CommonJS(CJS)는 브라우저가 없던 시절 Node.js를 위해 만들어졌습니다. 서버에서는 파일이 디스크에 있으니 `require()`가 파일을 동기적으로 읽어도 문제가 없었습니다. 언어 스펙이 아니라 **Node가 제공하는 런타임 라이브러리**에 가깝습니다.
+
+ESM은 언어 스펙(ES2015)입니다. 브라우저에서는 모듈을 네트워크로 받아야 하므로 동기 로딩이 불가능했고, 번들러 없이도 의존성을 **정적으로 분석**할 수 있어야 했습니다.
+
+핵심 차이는 이겁니다.
+
+> CJS의 `require`는 **실행 중에 호출되는 함수**, ESM의 `import`는 **실행 전에 분석되는 선언**이다.
+
+이 한 줄이 아래 모든 차이를 만듭니다.
+
+## 내부 동작 방식
+
+### CJS: 파일을 함수로 감싸서 실행
+
+Node는 모듈 파일을 대략 이렇게 감싸서 실행합니다.
+
+```javascript
+// Node 내부 (개념 코드)
+(function (exports, require, module, __filename, __dirname) {
+  // 여러분의 모듈 코드
+});
+```
+
+`require('./a')`는 호출 시점에 파일을 읽고, 실행하고, `module.exports` **객체의 참조**를 반환합니다. 결과는 `require.cache`에 저장되어 두 번째 호출부터는 캐시를 돌려줍니다. 그래서 `require`는 `if` 안에 넣을 수도, 경로를 문자열 연산으로 만들 수도 있습니다. 실행해 보기 전에는 무엇을 가져올지 알 수 없다는 뜻입니다.
+
+### ESM: 3단계로 나뉘는 로딩
+
+ESM은 코드를 실행하기 전에 세 단계를 거칩니다.
+
+```
+1. Construction  : 진입 파일부터 import 구문만 파싱해 의존성 그래프 구성 (파일 fetch)
+2. Instantiation : 각 모듈의 export 슬롯을 메모리에 만들고, import와 연결 (값은 아직 없음)
+3. Evaluation    : 의존성 순서대로(깊은 쪽부터) 코드 실행, 슬롯에 값 채움
+```
+
+`import`가 파일 최상단에 있어야 하고 문자열 리터럴만 받는 이유가 여기 있습니다. 1단계에서 코드를 한 줄도 실행하지 않고 그래프를 그려야 하기 때문입니다.
+
+### 값의 복사 vs 라이브 바인딩
+
+2단계에서 import는 값을 복사하는 게 아니라 **export 슬롯을 가리키는 읽기 전용 참조**가 됩니다.
+
+```javascript
+// counter.cjs
+let count = 0;
+module.exports = { count, inc: () => count++ };
+
+// main.cjs
+const { count, inc } = require('./counter.cjs');
+inc();
+console.log(count); // 0 — 구조분해 시점의 값이 복사됨
+```
+
+```javascript
+// counter.mjs
+export let count = 0;
+export const inc = () => count++;
+
+// main.mjs
+import { count, inc } from './counter.mjs';
+inc();
+console.log(count); // 1 — 같은 슬롯을 본다
+// count = 5;       // TypeError: 읽기 전용
+```
+
+CJS도 `module.exports` 객체를 통째로 들고 있으면 속성 변경이 보입니다. 하지만 구조분해하는 순간 원시값은 복사됩니다. ESM은 문법 수준에서 슬롯을 공유합니다.
+
+## 실제로 언제 쓰는가
+
+| | CommonJS | ESM |
+|---|---|---|
+| 로딩 | 동기, 런타임 | 비동기, 정적 분석 후 실행 |
+| 바인딩 | 값/객체 참조 | 라이브 바인딩 |
+| 최상위 await | 불가 | 가능 |
+| 트리 셰이킹 | 사실상 불가 | 가능 |
+| 조건부 로딩 | `require` | `import()` 동적 import |
+| `this` 최상위 | `module.exports` | `undefined` |
+
+**ESM이 기본값이어야 하는 경우:**
+- 번들러 트리 셰이킹이 번들 크기에 영향을 주는 프론트엔드 코드
+- 신규 라이브러리 (`"type": "module"` 또는 `exports` 필드의 `import` 조건)
+
+**CJS가 아직 남아 있는 경우:**
+- 오래된 Node 스크립트, ESM을 지원하지 않는 설정 파일 (`jest.config.js`, `.eslintrc.js` 등)
+- ESM 전환 비용이 이득보다 큰 레거시 의존성
+
+## 흔한 오해와 함정
+
+### 1. 트리 셰이킹이 안 되는 진짜 이유
+
+번들러는 "이 export를 아무도 안 쓴다"를 정적으로 증명해야 제거할 수 있습니다. `module.exports`는 런타임에 아무 객체나 될 수 있어 증명이 불가능합니다.
+
+```javascript
+// 수정 전: CJS 패키지 — 함수 하나만 써도 전체가 번들에 포함
+import { debounce } from 'some-cjs-lib';
+
+// 수정 후: ESM 빌드를 제공하는 패키지
+import { debounce } from 'some-esm-lib';
+```
+
+패키지가 ESM으로 빌드되어 있는지는 `package.json`의 `module`, `exports` 필드로 확인합니다. 또 하나, `import * as ns` 후 `ns[dynamicKey]`처럼 접근하면 정적 분석이 막혀 트리 셰이킹이 깨질 수 있습니다.
+
+### 2. 순환 참조는 두 시스템에서 다르게 터진다
+
+```javascript
+// a.cjs
+exports.loaded = false;
+const b = require('./b.cjs');
+exports.loaded = true;
+
+// b.cjs
+const a = require('./a.cjs');
+console.log(a.loaded); // false — a가 실행 중간이라 미완성 객체를 받음
+```
+
+CJS는 **부분적으로 채워진 `exports`** 를 받아서 조용히 `undefined`나 `false`를 만납니다. ESM은 슬롯이 이미 연결돼 있으므로 `let`/`const`로 선언된 값에 먼저 접근하면 TDZ 때문에 `ReferenceError`가 납니다. 에러가 나는 쪽이 오히려 디버깅하기 쉽습니다. 다만 `function` 선언은 호이스팅되므로 ESM에서도 순환 참조 안에서 호출 가능합니다.
+
+### 3. 둘을 섞을 때의 비대칭
+
+- ESM → CJS: `import pkg from './x.cjs'` 가능. `module.exports`가 default로 들어옵니다.
+- CJS → ESM: `require()`로 ESM을 가져오는 것은 오랫동안 불가능했습니다. ESM은 비동기 단계(최상위 await 가능성)를 가지므로 동기 함수인 `require`가 기다릴 수 없기 때문입니다. 최근 Node 버전에서는 최상위 await가 없는 ESM에 한해 `require(esm)`을 지원하지만, 버전 의존이므로 확인이 필요합니다. 항상 통하는 방법은 `await import()`입니다.
+
+### 4. `__dirname`이 없다
+
+ESM에는 CJS 래퍼 함수가 없으니 `__dirname`, `require`, `module`이 존재하지 않습니다. `import.meta.url`을 쓰세요.
+
+```javascript
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+```
+
+### 5. TypeScript 설정에서 헷갈리는 지점
+
+TS의 `import`는 컴파일 결과가 `module` 옵션에 따라 `require`로 바뀔 수도, 그대로 남을 수도 있습니다. 소스는 ESM 문법인데 실제 실행은 CJS인 경우가 흔하고, 이때 라이브 바인딩 같은 ESM 의미론은 사라집니다. Node 환경이라면 `moduleResolution`을 `NodeNext`로 맞추고, 상대 경로 import에 확장자를 명시하는 규칙까지 같이 봐야 합니다.
+
+## 정리
+
+CJS는 **"실행해야 알 수 있는 모듈"**, ESM은 **"실행 전에 알 수 있는 모듈"** 입니다.
+
+정적 분석이 필요한 프론트엔드와 신규 코드는 ESM으로, 레거시 설정 파일과 호환성 때문에 남은 부분만 CJS로 두는 것이 합리적입니다. 지금 쓰는 라이브러리 중 번들 크기가 큰 것 하나를 골라 ESM 빌드를 제공하는지 확인해 보세요.
