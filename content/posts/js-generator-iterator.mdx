@@ -1,0 +1,202 @@
+---
+title: "JS: 제너레이터와 이터레이터 — 실행을 멈췄다 재개할 수 있다는 것의 의미"
+date: "2026-11-07"
+category: "typescript"
+excerpt: "이터레이터는 '순회 가능한 것'을 하나의 프로토콜로 통일하기 위한 약속이고, 제너레이터는 그 약속을 함수의 실행 중단/재개로 구현하는 문법입니다. for...of, 스프레드, async/await이 모두 이 위에 서 있는 이유를 내부 동작부터 짚습니다."
+tags: ["JavaScript", "Generator", "Iterator", "Iteration Protocol"]
+readingTime: 7
+---
+
+## 이터레이터와 제너레이터가 존재하는 이유
+
+배열, 문자열, Map, Set, NodeList. 모두 "하나씩 꺼내 쓸 수 있는 것"이지만 내부 구조는 제각각입니다. ES5까지는 순회 방법도 제각각이었습니다. 배열은 `for (i...)`, 객체는 `for...in`, Map은 `forEach`.
+
+ES2015는 이 문제를 **순회 방식 자체를 프로토콜로 표준화**해서 풀었습니다. 데이터가 어떻게 저장되어 있든, 약속된 인터페이스만 지키면 `for...of`, 스프레드(`...`), 구조분해, `Array.from`이 전부 동작합니다.
+
+그런데 이 프로토콜을 손으로 구현하려면 상태 관리 코드가 꽤 번거롭습니다. 그래서 같이 도입된 것이 제너레이터입니다.
+
+> 이터레이터는 "무엇을 지키면 순회할 수 있는가"에 대한 약속이고, 제너레이터는 그 약속을 가장 쉽게 지키는 방법입니다.
+
+## 내부 동작 방식
+
+### 이터러블과 이터레이터 프로토콜
+
+두 개의 약속이 있고, 이름이 비슷해서 자주 헷갈립니다.
+
+| | 이터러블 (iterable) | 이터레이터 (iterator) |
+|---|---|---|
+| 요구 조건 | `[Symbol.iterator]()` 메서드를 가짐 | `next()` 메서드를 가짐 |
+| 반환값 | 이터레이터 | `{ value, done }` 객체 |
+| 역할 | "순회를 시작할 수 있다" | "다음 값을 하나 준다" |
+
+`for (const x of iterable)`은 대략 아래처럼 풀립니다.
+
+```js
+const it = iterable[Symbol.iterator]();
+let r = it.next();
+while (!r.done) {
+  const x = r.value;
+  // ...본문
+  r = it.next();
+}
+```
+
+핵심은 **값을 미리 다 만들어 두지 않고, `next()`가 불릴 때마다 하나씩 계산한다**는 점입니다. 순회는 pull 방식입니다. 소비하는 쪽이 요청해야 값이 만들어집니다.
+
+### 제너레이터: 호출해도 실행되지 않는 함수
+
+`function*`로 만든 함수를 호출하면 본문은 **한 줄도 실행되지 않고** 제너레이터 객체만 돌아옵니다. 이 객체가 이터러블이면서 이터레이터입니다.
+
+```js
+function* count() {
+  console.log("start");
+  yield 1;
+  yield 2;
+}
+
+const g = count();   // 아무것도 출력되지 않음
+g.next();            // "start" 출력 → { value: 1, done: false }
+g.next();            // { value: 2, done: false }
+g.next();            // { value: undefined, done: true }
+```
+
+`yield`를 만나면 엔진은 그 시점의 **실행 컨텍스트(지역 변수, 실행 위치)를 버리지 않고 보존한 채** 호출자에게 제어권을 넘깁니다. 다음 `next()`가 오면 보존해 둔 컨텍스트를 복원해 `yield` 다음 줄부터 이어갑니다.
+
+일반 함수는 호출되면 끝까지 실행되고 콜 스택에서 사라집니다. 제너레이터는 **콜 스택에서 빠져나가도 컨텍스트가 힙에 살아 있는** 함수입니다. 이 점이 `async/await`가 제너레이터와 같은 뿌리를 가진다고 말하는 이유이기도 합니다.
+
+### next(value)로 양방향 통신하기
+
+`yield`는 값을 내보내는 동시에 **값을 받는 표현식**이기도 합니다.
+
+```js
+function* chat() {
+  const name = yield "이름이 뭐예요?";
+  const age = yield `${name}님, 나이는요?`;
+  return `${name} / ${age}`;
+}
+
+const g = chat();
+g.next();          // { value: "이름이 뭐예요?", done: false }
+g.next("mimi");    // { value: "mimi님, 나이는요?", done: false }
+g.next(4);         // { value: "mimi / 4", done: true }
+```
+
+첫 번째 `next()`의 인자는 버려집니다. 받아줄 `yield`가 아직 없기 때문입니다. 이 구조가 co 같은 라이브러리에서 "Promise를 yield하면 러너가 resolve된 값을 `next()`로 돌려주는" async/await 이전의 비동기 패턴을 가능하게 했습니다.
+
+### return과 throw: 밖에서 안으로 개입하기
+
+- `g.return(v)` — 현재 `yield` 지점에서 `return v`가 실행된 것처럼 종료합니다. `finally` 블록은 실행됩니다.
+- `g.throw(err)` — 현재 `yield` 지점에서 예외가 던져진 것처럼 동작합니다. 제너레이터 안의 `try/catch`로 잡을 수 있습니다.
+
+`for...of`를 `break`로 빠져나올 때 엔진이 이터레이터의 `return()`을 호출해 주는 덕분에, 제너레이터 안의 `finally`에 둔 정리 코드가 실행됩니다.
+
+## 실제로 언제 쓰는가
+
+### 1. 지연 평가가 필요한 시퀀스
+
+무한 시퀀스나, 앞부분만 쓰면 되는 큰 데이터에 적합합니다.
+
+```js
+function* naturals() {
+  let n = 1;
+  while (true) yield n++;
+}
+
+function* take(n, it) {
+  if (n <= 0) return;
+  for (const v of it) {
+    yield v;
+    if (--n === 0) return;
+  }
+}
+
+[...take(3, naturals())]; // [1, 2, 3]
+```
+
+배열 메서드 체인(`map().filter()`)은 단계마다 중간 배열을 만듭니다. 제너레이터 파이프라인은 값 하나가 모든 단계를 통과한 뒤 다음 값을 처리합니다.
+
+### 2. 커스텀 클래스를 이터러블로 만들 때
+
+```js
+class Pagination {
+  constructor(total, size) { this.total = total; this.size = size; }
+
+  *[Symbol.iterator]() {
+    for (let p = 1; p <= Math.ceil(this.total / this.size); p++) {
+      yield p;
+    }
+  }
+}
+
+[...new Pagination(95, 10)]; // [1, 2, ..., 10]
+```
+
+`next()`와 상태 변수를 직접 관리하는 코드가 `yield` 하나로 줄어듭니다.
+
+### 3. 비동기 스트림: async generator
+
+`for await...of`와 `async function*`는 페이지네이션 API나 스트림 응답을 순회할 때 유용합니다.
+
+```js
+async function* fetchAllPages(url) {
+  let next = url;
+  while (next) {
+    const res = await fetch(next).then((r) => r.json());
+    yield* res.items;
+    next = res.nextUrl;
+  }
+}
+
+for await (const item of fetchAllPages("/api/products")) {
+  // 소비자가 다음 값을 요청할 때만 다음 페이지를 가져온다
+}
+```
+
+**쓰지 않아도 되는 경우:** 데이터가 이미 메모리에 있고 크기가 작다면 배열 메서드가 더 단순하고 빠릅니다. 제너레이터는 "한 번에 다 필요하지 않은" 상황에서 가치가 생깁니다.
+
+## 흔한 오해와 함정
+
+### 1. 이터레이터는 한 번 쓰면 끝난다
+
+배열은 이터러블이라 몇 번이고 순회됩니다. `[Symbol.iterator]()`를 호출할 때마다 새 이터레이터를 만들기 때문입니다. 반면 **제너레이터 객체는 이터레이터 자신**이어서 소진되면 되돌릴 수 없습니다.
+
+```js
+const g = naturals();
+const a = [...take(2, g)]; // [1, 2]
+const b = [...take(2, g)]; // [3, 4]  ← 처음부터가 아니라 이어서 나온다
+```
+
+재사용하려면 제너레이터 객체가 아니라 **제너레이터 함수를 넘기고 필요할 때마다 호출**해야 합니다.
+
+### 2. `yield` 안의 콜백에서는 yield할 수 없다
+
+```js
+// 수정 전 — SyntaxError
+function* bad(list) {
+  list.forEach((v) => {
+    yield v;
+  });
+}
+
+// 수정 후
+function* good(list) {
+  for (const v of list) yield v;
+  // 또는 yield* list;
+}
+```
+
+`yield`는 제너레이터 함수 본문에서 직접 쓸 때만 유효합니다. 콜백은 별개의 함수이기 때문입니다.
+
+### 3. `yield*`는 단순 반복문이 아니다
+
+`yield* inner()`는 안쪽 이터러블에 위임하면서 `next(value)`, `throw`, `return`까지 그대로 전달하고, 안쪽 제너레이터의 `return` 값을 표현식의 결과로 돌려줍니다. `for (const v of inner()) yield v`와는 양방향 통신 측면에서 다릅니다.
+
+### 4. `for...of`와 `return` 값
+
+`return`으로 반환한 값은 `done: true`일 때만 나오므로 `for...of`와 스프레드는 이 값을 **무시**합니다. 최종 결과를 쓰고 싶다면 `next()`를 직접 호출하거나 `yield*` 표현식으로 받아야 합니다.
+
+## 정리
+
+이터레이터 프로토콜의 핵심은 **"순회를 값의 저장 방식에서 분리한 약속"** 이고, 제너레이터는 **"실행 컨텍스트를 보존한 채 멈췄다 재개하는 함수"** 입니다.
+
+데이터를 한꺼번에 만들 필요가 없거나, 커스텀 자료구조를 `for...of`로 순회시키고 싶거나, 비동기 데이터를 순서대로 당겨 쓰고 싶을 때 제너레이터를 고려하세요. 그 외에는 배열 메서드로 충분합니다.
