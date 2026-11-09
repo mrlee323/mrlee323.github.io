@@ -1,0 +1,204 @@
+---
+title: "JS: Proxy와 Reflect — 객체의 내부 메서드를 가로채는 방법"
+date: "2026-11-09"
+category: "typescript"
+excerpt: "Proxy는 객체 연산을 흉내 내는 래퍼가 아니라, 엔진이 객체에 수행하는 '내부 메서드'(Internal Methods)를 가로채는 장치입니다. Reflect가 왜 짝으로 존재하는지, receiver와 invariant가 어떤 함정을 만드는지까지 파헤칩니다."
+tags: ["JavaScript", "Proxy", "Reflect", "Reactivity"]
+readingTime: 7
+---
+
+## Proxy와 Reflect가 존재하는 이유
+
+ES5 시절 "객체에 대한 접근을 감지"하려면 `Object.defineProperty`로 프로퍼티마다 getter/setter를 심어야 했습니다. Vue 2의 반응성이 정확히 이 방식이었고, 그 한계도 그대로 물려받았습니다.
+
+1. **미리 아는 키만 감지** — 나중에 추가되는 프로퍼티(`obj.newKey = 1`)는 감지할 수 없습니다.
+2. **삭제·`in` 연산 불가** — `delete obj.key`, `'key' in obj`는 훅이 없습니다.
+3. **배열 인덱스/length** 변경 역시 우회책(`Vue.set`)이 필요했습니다.
+
+문제의 뿌리는 "프로퍼티 단위"로 접근했다는 점입니다. ES2015의 Proxy는 관점을 바꿉니다. **프로퍼티가 아니라 객체 전체에 대한 연산**을 가로챕니다.
+
+> 키를 하나씩 감시하는 대신, 객체에 가해지는 "연산의 종류"를 감시한다.
+
+그러면 Reflect는 왜 같이 생겼을까요? 가로챈 연산을 **원래 동작대로 위임**할 표준 수단이 필요했기 때문입니다. 이 글에서는 이 둘이 어떻게 맞물리는지 봅니다.
+
+## 내부 동작 방식
+
+### 객체 연산 = 내부 메서드 호출
+
+스펙상 모든 객체는 `[[Get]]`, `[[Set]]`, `[[Has]]`, `[[Delete]]`, `[[OwnPropertyKeys]]`, `[[DefineOwnProperty]]`, `[[GetPrototypeOf]]` 같은 **내부 메서드**를 가집니다. 우리가 쓰는 문법은 전부 이것으로 번역됩니다.
+
+| 코드 | 내부 메서드 | Proxy trap |
+|---|---|---|
+| `obj.a` | `[[Get]]` | `get` |
+| `obj.a = 1` | `[[Set]]` | `set` |
+| `'a' in obj` | `[[HasProperty]]` | `has` |
+| `delete obj.a` | `[[Delete]]` | `deleteProperty` |
+| `Object.keys(obj)`, `for...in` | `[[OwnPropertyKeys]]` | `ownKeys` |
+| `fn()` | `[[Call]]` | `apply` |
+| `new Fn()` | `[[Construct]]` | `construct` |
+
+일반 객체는 이 메서드들을 엔진이 기본 구현으로 처리합니다. **Proxy는 exotic object**, 즉 이 내부 메서드가 "handler의 trap을 먼저 호출하도록" 바뀐 객체입니다. trap이 없으면 target에 그대로 전달됩니다.
+
+```javascript
+const target = { a: 1 };
+const proxy = new Proxy(target, {
+  get(t, key, receiver) {
+    console.log("get", key);
+    return Reflect.get(t, key, receiver);
+  },
+});
+
+proxy.a; // "get a" → 1
+```
+
+### Reflect는 내부 메서드의 함수형 노출
+
+Reflect의 메서드는 trap과 1:1로 대응하며, **내부 메서드를 그대로 호출하는 함수**입니다. `Reflect.get(t, k, r)`은 `t.[[Get]](k, r)`입니다.
+
+단순히 `t[k]`로 쓰면 되지 않느냐고 생각하기 쉽지만, 차이가 있습니다.
+
+- `Reflect.set`, `defineProperty`, `deleteProperty`는 **예외 대신 boolean을 반환**합니다. trap은 성공 여부를 boolean으로 돌려줘야 하므로 그대로 쓰기 좋습니다.
+- **receiver 인자**를 넘길 수 있습니다. 이게 핵심입니다.
+
+### receiver: getter 안의 this는 누구인가
+
+```javascript
+const user = {
+  _name: "kim",
+  get name() {
+    return this._name;
+  },
+};
+
+const proxy = new Proxy(user, {
+  get(t, key) {
+    console.log("get", key);
+    return t[key]; // receiver 무시
+  },
+});
+
+proxy.name;
+// "get name"  ← "get _name"은 찍히지 않는다
+```
+
+`t[key]`로 읽으면 getter의 `this`가 **target**이 되어, getter 내부의 `this._name` 접근은 Proxy를 거치지 않습니다. 반응성 시스템이라면 의존성 추적이 누락됩니다.
+
+```javascript
+get(t, key, receiver) {
+  return Reflect.get(t, key, receiver); // this = proxy
+}
+```
+
+`receiver`(보통 proxy 자신)를 넘기면 getter의 `this`가 proxy가 되어 `_name` 접근도 trap을 탑니다. **Reflect가 짝인 가장 실질적인 이유가 이것**입니다. 상속 체인에서 Proxy가 프로토타입 쪽에 있을 때도 receiver는 "최초에 접근한 객체"를 가리킵니다.
+
+### Invariant: trap이 거짓말할 수 없는 영역
+
+Proxy는 무엇이든 속일 수 있을 것 같지만, 엔진은 일관성을 지키기 위해 **불변 조건**을 검사합니다.
+
+```javascript
+const frozen = Object.freeze({ a: 1 });
+const p = new Proxy(frozen, {
+  get() {
+    return 2; // TypeError!
+  },
+});
+p.a;
+// TypeError: 'get' on proxy: property 'a' is a read-only and
+// non-configurable data property ... expected '1' but got '2'
+```
+
+target이 non-configurable·non-writable로 고정한 값은 trap이 다른 값을 돌려줄 수 없습니다. `ownKeys`가 non-configurable 키를 빼먹는 경우 등도 마찬가지입니다. 즉 **target의 상태는 Proxy 뒤에서도 여전히 진실의 하한선**입니다.
+
+## 실제로 언제 쓰는가
+
+**적합한 경우:**
+- **반응형 상태 시스템** — Vue 3 `reactive`, MobX 등. 읽을 때 의존성을 수집(`get`)하고, 쓸 때 구독자를 깨웁니다(`set`).
+- **유효성 검증/방어** — 설정 객체에 잘못된 타입이 들어오는 순간 에러.
+- **존재하지 않는 키 접근 감지** — 개발 모드에서 오타로 인한 `undefined`를 즉시 에러로.
+- **API 클라이언트의 동적 메서드** — `api.users.get()` 같은 체이닝 DSL.
+
+```javascript
+// 개발 모드 전용: 오타 즉시 감지
+const strict = (obj) =>
+  new Proxy(obj, {
+    get(t, key, receiver) {
+      if (!(key in t) && typeof key === "string") {
+        throw new Error(`Unknown property: ${key}`);
+      }
+      return Reflect.get(t, key, receiver);
+    },
+  });
+```
+
+**쓰지 않아도 되는 경우:**
+- 그냥 값 변경을 알고 싶을 뿐이라면 setter 함수나 이벤트가 더 단순합니다.
+- 성능이 민감한 핫패스. Proxy 접근은 일반 프로퍼티 접근보다 훨씬 느리고 엔진 최적화(인라인 캐시)도 약해집니다.
+- 트랜스파일/폴리필이 필요한 환경. Proxy는 **폴리필이 불가능**합니다.
+
+## 흔한 오해와 함정
+
+### 1. Proxy는 target과 동일하지 않다
+
+```javascript
+const target = {};
+const proxy = new Proxy(target, {});
+
+proxy === target; // false
+const set = new Set([target]);
+set.has(proxy);   // false
+```
+
+동일성 비교, `Map/Set` 키, `WeakMap` 조회가 모두 어긋납니다. 그래서 Vue 같은 라이브러리는 `target → proxy` 캐시(WeakMap)를 유지해 **같은 객체에 항상 같은 proxy**를 돌려줍니다.
+
+### 2. 내장 객체의 내부 슬롯
+
+```javascript
+const m = new Proxy(new Map(), {});
+m.set("a", 1);
+// TypeError: Method Map.prototype.set called on incompatible receiver
+```
+
+`Map`, `Set`, `Date`, `Promise` 등은 `[[MapData]]` 같은 **내부 슬롯**을 가집니다. Proxy에는 이 슬롯이 없으므로 `this`가 proxy인 채로 메서드가 호출되면 실패합니다. 해결은 함수를 target에 bind하는 것입니다.
+
+```javascript
+get(t, key) {
+  const v = Reflect.get(t, key, t); // receiver를 target으로
+  return typeof v === "function" ? v.bind(t) : v;
+}
+```
+
+private field(`#x`)도 같은 이유로 Proxy를 통과한 `this`에서는 접근할 수 없습니다.
+
+### 3. 깊은 감시는 자동으로 되지 않는다
+
+```javascript
+const state = new Proxy({ user: { name: "kim" } }, {
+  set() { console.log("changed"); return true; },
+});
+
+state.user.name = "lee"; // 아무것도 출력되지 않음
+```
+
+`state.user`는 **원본 중첩 객체**를 반환하므로 그 안의 쓰기는 감지되지 않습니다. 중첩 객체도 `get` trap에서 lazily proxy로 감싸야 하며, Vue 3가 접근 시점에 감싸는 이유가 여기 있습니다.
+
+### 4. set trap에서 true를 반환하지 않으면
+
+```javascript
+// 수정 전
+set(t, key, value) {
+  t[key] = value; // 반환값 없음
+}
+
+// 수정 후
+set(t, key, value, receiver) {
+  return Reflect.set(t, key, value, receiver);
+}
+```
+
+strict mode(ESM은 기본)에서 falsy를 반환하면 `TypeError`가 발생합니다. `Reflect.set`의 boolean 반환값을 그대로 돌려주면 안전합니다.
+
+## 정리
+
+Proxy의 핵심은 **"프로퍼티가 아니라 객체의 내부 메서드를 가로챈다"** 는 것이고, Reflect는 **"가로챈 연산을 receiver까지 포함해 원래 의미대로 위임하는 표준 수단"** 입니다.
+
+반응성, 검증, 동적 API처럼 "연산 자체"를 관찰해야 할 때 쓰고, 단순 변경 알림이나 성능 핫패스에는 쓰지 마세요. trap을 작성할 땐 반드시 `Reflect.*`에 `receiver`를 넘기는 습관부터 들이면 대부분의 함정을 피할 수 있습니다.
