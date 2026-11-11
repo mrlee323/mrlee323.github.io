@@ -1,0 +1,163 @@
+---
+title: "JS: map/filter/reduce 내부 동작 — 반복 메서드는 스펙에서 어떻게 정의되는가"
+date: "2026-11-11"
+category: "typescript"
+excerpt: "map/filter/reduce는 for 루프의 문법 설탕이 아니라, 스펙이 정의한 '희소 배열 건너뛰기 + 길이 고정 + 콜백 3인자' 규칙을 따르는 알고리즘입니다. 이 규칙을 알면 parseInt 사고, 빈 배열 reduce 에러, 체이닝 비용이 모두 설명됩니다."
+tags: ["JavaScript", "Array", "reduce", "Iteration"]
+readingTime: 7
+---
+
+## 이 메서드들이 존재하는 이유
+
+`for` 루프는 "어떻게 순회할지"와 "각 원소로 무엇을 할지"를 한 덩어리로 섞습니다. 인덱스 관리, 결과 배열 초기화, 종료 조건이 매번 반복되고, 그 사이에 실수가 끼어듭니다.
+
+`map`, `filter`, `reduce`는 이 둘을 분리합니다. 순회는 엔진이 맡고, 개발자는 **원소 하나를 어떻게 다룰지**만 콜백으로 넘깁니다.
+
+> 반복 메서드는 순회의 "의도"를 이름으로 드러내는 도구다.
+
+- `map` — 같은 길이의 새 배열 (변환)
+- `filter` — 조건을 통과한 원소만 (선택)
+- `reduce` — 하나의 값으로 접기 (집계)
+
+세 메서드는 사실 `reduce` 하나로 모두 표현할 수 있습니다. 그래서 `reduce`가 가장 일반적이고, 그만큼 가장 읽기 어렵습니다.
+
+## 내부 동작 방식
+
+### 스펙의 알고리즘은 단순하다
+
+ECMAScript 스펙의 `Array.prototype.map`을 의사 코드로 줄이면 이렇습니다.
+
+```js
+// 스펙을 단순화한 map
+function map(callback, thisArg) {
+  const O = Object(this);
+  const len = O.length >>> 0;       // 시작 시점에 길이를 한 번만 읽는다
+  const A = new Array(len);
+
+  for (let k = 0; k < len; k++) {
+    if (k in O) {                   // 존재하는 인덱스만 처리
+      A[k] = callback.call(thisArg, O[k], k, O);
+    }
+  }
+  return A;
+}
+```
+
+여기서 세 가지 규칙이 나옵니다.
+
+1. **길이는 순회 시작 시점에 고정된다.** 콜백 안에서 `push`해도 그 원소는 방문하지 않습니다.
+2. **`k in O`로 존재 여부를 검사한다.** 구멍(hole)이 있는 희소 배열은 그 칸을 건너뜁니다. 결과 배열에도 구멍이 그대로 남습니다.
+3. **콜백은 항상 `(value, index, array)` 3개 인자로 호출된다.** 넘긴 함수가 인자를 몇 개 받든 상관없이 엔진은 3개를 다 넘깁니다.
+
+### reduce는 누산기를 들고 간다
+
+```js
+// 스펙을 단순화한 reduce
+function reduce(callback, ...init) {
+  const O = Object(this);
+  const len = O.length >>> 0;
+  let k = 0, acc;
+
+  if (init.length) {
+    acc = init[0];
+  } else {
+    while (k < len && !(k in O)) k++;
+    if (k >= len) throw new TypeError("Reduce of empty array with no initial value");
+    acc = O[k++];
+  }
+
+  for (; k < len; k++) {
+    if (k in O) acc = callback(acc, O[k], k, O);
+  }
+  return acc;
+}
+```
+
+초기값이 없으면 **첫 번째 원소가 누산기가 되고 순회는 두 번째부터** 시작합니다. 빈 배열에 초기값이 없을 때 던지는 `TypeError`도 이 분기에서 나옵니다. 엔진이 임의로 정한 동작이 아니라 "꺼낼 첫 원소가 없다"는 상태를 그대로 에러로 만든 것입니다.
+
+### 새 배열을 만든다는 것의 비용
+
+`map`과 `filter`는 매번 새 배열을 할당합니다. 체이닝하면 단계마다 중간 배열이 생깁니다.
+
+```js
+users
+  .filter(u => u.active)   // 중간 배열 1
+  .map(u => u.id)          // 중간 배열 2
+  .slice(0, 10);           // 결과
+```
+
+수백 개 규모에서는 무의미한 차이입니다. 하지만 수십만 건을 매 렌더마다 처리한다면 **할당과 GC 압력**이 됩니다. 병목이 실제로 확인됐을 때만 단일 `reduce`나 `for` 루프로 합치는 것이 맞습니다.
+
+## 실제로 언제 쓰는가
+
+**적합한 경우:**
+- 데이터를 다른 모양으로 변환할 때 (`map`) — React에서 리스트를 JSX로 바꾸는 가장 흔한 경우
+- 조건에 맞는 부분집합이 필요할 때 (`filter`)
+- 합계, 그룹핑, 인덱스 맵(`id → 객체`)처럼 결과가 다른 형태일 때 (`reduce`)
+
+**쓰지 않아도 되는 경우:**
+- 결과를 쓰지 않고 부수효과만 낼 때 — `map` 대신 `forEach`나 `for...of`
+- 중간에 멈춰야 할 때 — `map/filter/reduce`는 조기 종료가 없습니다. `some`, `find`, `for...of`가 맞습니다.
+- `await`를 순차적으로 써야 할 때 — 콜백이 async면 `map`은 Promise 배열만 돌려줍니다.
+
+```js
+// reduce로 id 인덱스 맵 만들기
+const byId = hotels.reduce((acc, h) => {
+  acc[h.id] = h;
+  return acc;
+}, {});
+```
+
+## 흔한 오해와 함정
+
+### 1. `["1","2","3"].map(parseInt)`
+
+가장 유명한 사고입니다. 콜백에 3개 인자가 모두 전달된다는 규칙 때문에 생깁니다.
+
+```js
+// 수정 전
+["1", "2", "3"].map(parseInt);
+// [1, NaN, NaN]
+// parseInt("1", 0), parseInt("2", 1), parseInt("3", 2) 로 호출된 것
+
+// 수정 후
+["1", "2", "3"].map(s => parseInt(s, 10));
+// [1, 2, 3]
+```
+
+`parseInt`의 두 번째 인자는 진법(radix)입니다. `map`이 넘긴 **index가 진법으로 해석**된 것입니다.
+
+### 2. 희소 배열은 건너뛴다
+
+```js
+const arr = [1, , 3];
+arr.map(x => x * 2);   // [2, <empty>, 6]  — 콜백이 2번만 호출됨
+Array.from(arr, x => (x ?? 0) * 2); // [2, 0, 6] — Array.from은 구멍도 방문
+```
+
+`k in O` 검사 때문입니다. `new Array(5).map(...)`이 아무것도 하지 않는 이유도 같습니다. 구멍뿐인 배열이기 때문입니다.
+
+### 3. 원본은 건드리지 않는다고 믿기
+
+메서드 자체는 새 배열을 반환하지만, **원소가 객체라면 참조는 공유됩니다.**
+
+```js
+const copy = users.map(u => u);
+copy[0].name = "changed";   // users[0].name도 바뀜
+```
+
+`map`은 얕은 복사입니다. 원소를 바꾸려면 `u => ({ ...u, name: "changed" })`처럼 새 객체를 만들어야 합니다.
+
+### 4. reduce에 초기값을 생략하기
+
+초기값이 없으면 빈 배열에서 에러가 나고, 원소 타입과 결과 타입이 다를 때 첫 원소가 누산기 역할을 해서 결과가 어긋납니다. **결과 타입이 원소 타입과 다르다면 초기값은 사실상 필수**입니다.
+
+### 5. 콜백 안에서 배열을 수정하기
+
+길이는 시작 시점에 고정되지만 각 원소는 방문 시점의 값을 읽습니다. 순회 중 앞쪽 원소를 지우면 뒤 원소들이 한 칸씩 당겨져 일부가 방문되지 않습니다. 순회 대상은 건드리지 않는 것이 원칙입니다.
+
+## 정리
+
+`map/filter/reduce`는 단순한 for 루프가 아니라 **"길이 고정, 존재하는 인덱스만, 콜백에 3인자"** 라는 스펙의 규칙 위에서 동작합니다. 이 규칙을 알면 `parseInt` 사고와 희소 배열, 빈 배열 `reduce` 에러가 우연이 아니라 필연으로 읽힙니다.
+
+변환·선택·집계라는 의도가 분명할 때 쓰고, 조기 종료나 부수효과가 목적이라면 다른 도구를 고르세요.
