@@ -1,0 +1,143 @@
+---
+title: "JS: 프로퍼티 디스크립터 — 프로퍼티는 값이 아니라 '속성 묶음'이다"
+date: "2026-11-12"
+category: "typescript"
+excerpt: "JavaScript의 프로퍼티는 단순한 key-value가 아니라 value, writable, enumerable, configurable이라는 속성 묶음입니다. 엔진이 이 메타데이터를 왜 두었는지, Object.freeze·getter/setter·클래스 메서드가 어떻게 이 위에서 동작하는지 파헤칩니다."
+tags: ["JavaScript", "Property Descriptor", "Object.defineProperty", "freeze"]
+readingTime: 7
+---
+
+## 프로퍼티 디스크립터가 존재하는 이유
+
+`obj.a = 1`은 단순히 "a라는 키에 1을 저장"하는 것처럼 보입니다. 하지만 언어 입장에서는 부족합니다. 내장 객체와 라이브러리가 풀어야 하는 요구가 다르기 때문입니다.
+
+1. `Array.prototype.map` 같은 내장 메서드가 `for...in`에 튀어나오면 안 된다
+2. `Math.PI`는 누가 덮어써도 안 된다
+3. `length`는 값처럼 보이지만 쓰면 배열이 잘려야 한다
+4. 라이브러리는 사용자가 지울 수 없는 내부 프로퍼티를 원한다
+
+값 하나로는 이 정책들을 표현할 수 없습니다. 그래서 ES5는 **프로퍼티 = 값 + 정책 속성**이라는 모델을 도입했고, 그 정책 묶음이 프로퍼티 디스크립터입니다.
+
+> 객체는 "키 → 값"의 맵이 아니라 "키 → 프로퍼티 디스크립터"의 맵입니다.
+
+## 내부 동작 방식
+
+### 두 종류의 프로퍼티
+
+디스크립터는 데이터 프로퍼티와 접근자 프로퍼티 두 형태 중 하나입니다.
+
+| | 데이터 프로퍼티 | 접근자 프로퍼티 |
+|---|---|---|
+| 핵심 속성 | `value`, `writable` | `get`, `set` |
+| 공통 속성 | `enumerable`, `configurable` | `enumerable`, `configurable` |
+
+```js
+const o = { a: 1 };
+Object.getOwnPropertyDescriptor(o, "a");
+// { value: 1, writable: true, enumerable: true, configurable: true }
+```
+
+리터럴이나 대입으로 만든 프로퍼티는 세 속성이 모두 `true`입니다. 반면 `Object.defineProperty`로 만들면 **명시하지 않은 속성은 기본값 `false`** 입니다. 같은 프로퍼티라도 만드는 경로에 따라 기본값이 다르다는 점이 첫 번째 함정입니다.
+
+### 각 속성이 실제로 막는 것
+
+- **writable: false** — `[[Set]]`이 값을 바꾸지 못함. strict mode에서는 `TypeError`, 아니면 조용히 무시
+- **enumerable: false** — `for...in`, `Object.keys`, 스프레드, `JSON.stringify`에서 제외 (`getOwnPropertyNames`에는 보임)
+- **configurable: false** — 삭제 불가, 디스크립터 재정의 불가 (단, `writable: true → false`는 한 번 허용)
+
+`configurable: false`는 **일방통행 문**입니다. 한 번 잠그면 되돌릴 수 없습니다.
+
+### 접근자 프로퍼티는 값을 저장하지 않는다
+
+```js
+const temp = {
+  _c: 20,
+  get f() { return this._c * 9 / 5 + 32; },
+  set f(v) { this._c = (v - 32) * 5 / 9; },
+};
+```
+
+`temp.f`를 읽으면 엔진은 저장된 값을 꺼내지 않고 `get` 함수를 `this = temp`로 호출합니다. 객체 리터럴의 `get`/`set`, 클래스의 `get`/`set` 문법은 모두 접근자 디스크립터를 만드는 문법 설탕입니다.
+
+### 클래스 메서드가 열거되지 않는 이유
+
+```js
+class A { m() {} }
+Object.getOwnPropertyDescriptor(A.prototype, "m").enumerable; // false
+```
+
+클래스 문법은 메서드를 `enumerable: false`로 정의합니다. 생성자 함수 시절 `A.prototype.m = ...`으로 붙이면 열거되던 것과 다릅니다. 인스턴스를 `for...in`으로 돌 때 메서드가 안 나오는 이유가 이것입니다.
+
+### freeze, seal, preventExtensions는 디스크립터 일괄 조작이다
+
+| 메서드 | 새 프로퍼티 추가 | 삭제/재정의 | 값 변경 |
+|---|---|---|---|
+| `preventExtensions` | ❌ | ✅ | ✅ |
+| `seal` | ❌ | ❌ (`configurable: false`) | ✅ |
+| `freeze` | ❌ | ❌ | ❌ (`writable: false`) |
+
+`freeze`는 마법이 아니라 모든 own 프로퍼티를 `configurable: false`, 데이터 프로퍼티는 `writable: false`로 바꾸고 확장을 막는 연산입니다.
+
+## 실제로 언제 쓰는가
+
+**직접 `defineProperty`를 쓰는 경우는 많지 않습니다.** 하지만 다음 상황에서는 필요합니다.
+
+- 라이브러리 내부 상태를 `enumerable: false`로 숨겨 직렬화·로그에 섞이지 않게 할 때
+- 상수 객체를 방어적으로 잠글 때 (`Object.freeze`)
+- 프로퍼티 접근을 가로채는 계산 프로퍼티 (`get`)
+- 객체 복사 시 getter/setter까지 보존해야 할 때
+
+```js
+// 수정 전: getter가 값으로 평가되어 사라진다
+const copy1 = { ...source };
+
+// 수정 후: 디스크립터 단위로 복사
+const copy2 = Object.defineProperties(
+  {},
+  Object.getOwnPropertyDescriptors(source)
+);
+```
+
+스프레드와 `Object.assign`은 `[[Get]]`으로 읽은 **값**을 `[[Set]]`/`CreateDataProperty`로 쓰기 때문에 접근자는 평가된 값으로 굳습니다. 접근자나 속성 정책을 보존하려면 `getOwnPropertyDescriptors`가 필요합니다.
+
+여행 서비스처럼 상수성이 중요한 도메인(예약 상태 코드, 요금 정책 테이블 등)에서는 `Object.freeze`로 설정 객체를 잠가 두면 실수로 인한 변경을 개발 시점에 잡을 수 있습니다.
+
+## 흔한 오해와 함정
+
+### 1. freeze는 얕다
+
+```js
+const config = Object.freeze({ api: { url: "/v1" } });
+config.api.url = "/v2"; // 성공한다
+config.api = null;      // 무시됨 (strict에서는 TypeError)
+```
+
+`freeze`는 해당 객체의 own 프로퍼티만 잠급니다. 중첩 객체는 재귀적으로 직접 freeze해야 합니다.
+
+### 2. const는 freeze가 아니다
+
+`const`는 **바인딩** 재할당을 막고, `freeze`는 **객체 내부**를 막습니다. 서로 다른 층의 보호입니다.
+
+### 3. 암묵적 기본값의 차이
+
+```js
+const o = {};
+o.a = 1;                                   // writable/enumerable/configurable: true
+Object.defineProperty(o, "b", { value: 2 }); // 전부 false
+```
+
+`defineProperty`로 만든 `b`는 `Object.keys(o)`에 안 나오고, 수정과 삭제도 안 됩니다. "분명 정의했는데 안 보인다"의 대표 원인입니다.
+
+### 4. 상속된 읽기 전용 프로퍼티는 대입을 막는다
+
+프로토타입 체인 위쪽에 `writable: false`인 프로퍼티가 있으면, 하위 객체에서 `obj.x = 1`로 **섀도잉**하는 것도 실패합니다. `defineProperty`로 직접 정의하면 가능합니다.
+
+### 5. 접근자 + 스프레드 = 값 고정
+
+위 복사 예시처럼, getter를 가진 객체를 스프레드하면 그 시점의 값만 복사됩니다. 반응형 객체나 계산 프로퍼티를 복사할 때 자주 놓칩니다.
+
+## 정리
+
+프로퍼티 디스크립터의 핵심은 **"프로퍼티는 값이 아니라 값과 정책의 묶음"** 이라는 모델입니다. `freeze`, 클래스 메서드의 비열거성, getter/setter, `length`의 특수 동작이 모두 이 위에서 설명됩니다.
+
+직접 `defineProperty`를 쓸 일은 드물지만, 객체 복사·직렬화·불변성 문제를 만났을 때는 가장 먼저 `getOwnPropertyDescriptor`로 속성을 확인해 보세요. 원인이 대부분 거기 있습니다.
