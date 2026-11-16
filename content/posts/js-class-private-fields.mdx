@@ -1,0 +1,187 @@
+---
+title: "JS: class private fields(#) — 컨벤션이 아니라 언어가 막는 비공개"
+date: "2026-11-16"
+category: "typescript"
+excerpt: "#필드는 `_name` 컨벤션의 문법 설탕이 아니라, 프로퍼티 테이블 바깥에 있는 별도의 슬롯입니다. 브랜드 체크, WeakMap과의 관계, 프록시·상속에서 깨지는 지점까지 내부를 파헤칩니다."
+tags: ["JavaScript", "Class", "Private Fields", "Encapsulation"]
+readingTime: 7
+---
+
+## private fields가 존재하는 이유
+
+JS 클래스에는 오랫동안 진짜 private이 없었습니다. 그래서 세 가지 우회가 공존했습니다.
+
+1. **`_name` 컨벤션** — 그냥 public 프로퍼티입니다. 누구든 읽고 덮어씁니다.
+2. **클로저** — 생성자 안의 지역변수. 안전하지만 메서드를 인스턴스마다 새로 만들어야 합니다.
+3. **WeakMap** — 모듈 스코프 `WeakMap<instance, data>`. 안전하고 메서드도 공유되지만 장황합니다.
+
+라이브러리는 내부 상태를 숨기고 싶고, 사용자는 `Object.keys`나 `JSON.stringify`로 우연히 그 상태를 건드립니다. 한 번 노출된 `_cache`는 사실상 공개 API가 되어 **내부 구현을 바꾸는 순간 breaking change**가 됩니다.
+
+> "바깥에서 접근할 수 없다"를 컨벤션이 아니라 문법이 보장해야 한다.
+
+`#`은 이 요구를 언어 차원에서 해결합니다.
+
+## 내부 동작 방식
+
+### 프로퍼티가 아니라 슬롯이다
+
+```javascript
+class Counter {
+  #count = 0;
+  inc() { return ++this.#count; }
+}
+
+const c = new Counter();
+Object.keys(c);                 // []
+Object.getOwnPropertyNames(c);  // []
+Reflect.ownKeys(c);             // []
+c["#count"];                    // undefined (그냥 존재하지 않는 문자열 키)
+```
+
+`#count`는 `"#count"`라는 이름의 프로퍼티가 **아닙니다.** 스펙상 객체에는 일반 프로퍼티 맵과 별도로 `[[PrivateElements]]`라는 내부 목록이 있고, 여기에 (Private Name, 값) 쌍이 저장됩니다.
+
+핵심은 **Private Name이 클래스 평가 시점마다 새로 만들어지는 고유 식별자**라는 점입니다. 문자열이 아니라 Symbol에 가깝지만, 어디에도 노출되지 않는 Symbol입니다. 같은 `#count`라는 철자를 써도 다른 클래스의 `#count`와는 서로 다른 키입니다.
+
+### 개념적으로는 WeakMap과 같다
+
+```javascript
+// #count를 손으로 풀어 쓰면 개념적으로 이렇습니다
+const count = new WeakMap();
+class Counter {
+  constructor() { count.set(this, 0); }
+  inc() { const v = count.get(this) + 1; count.set(this, v); return v; }
+}
+```
+
+인스턴스가 GC되면 슬롯도 함께 사라진다는 점, 클래스 코드만 키(`count`)를 쥐고 있다는 점이 같습니다. 다만 엔진은 이를 해시 조회가 아니라 **고정 오프셋 접근**으로 최적화할 수 있습니다. 필드 레이아웃이 클래스 정의로 정해지기 때문입니다.
+
+### 접근 시 브랜드 체크
+
+```javascript
+class A { #x = 1; static read(o) { return o.#x; } }
+
+A.read(new A()); // 1
+A.read({});      // TypeError: Cannot read private member #x from an object whose class did not declare it
+```
+
+일반 프로퍼티는 없으면 `undefined`지만, private은 **없으면 던집니다.** 이 성질 덕분에 `#x in o`는 "이 객체가 정말 이 클래스의 생성자를 거쳤는가"를 판별하는 **브랜드 체크**로 쓸 수 있습니다.
+
+```javascript
+class A {
+  #x;
+  static isA(o) { return #x in o; } // ES2022
+}
+```
+
+`instanceof`는 프로토타입을 바꾸면 속일 수 있지만, `#x in o`는 속일 수 없습니다.
+
+### 초기화 순서
+
+필드는 **생성자 본문이 아니라 `super()` 반환 직후**에 초기화됩니다. 베이스 클래스라면 생성자 진입 직전입니다.
+
+```javascript
+class Base {
+  constructor() { this.init(); }   // 파생 클래스의 #field는 아직 없다
+  init() {}
+}
+class Derived extends Base {
+  #v = 1;
+  init() { console.log(this.#v); } // TypeError
+}
+new Derived();
+```
+
+부모 생성자가 실행되는 동안에는 자식의 `#v`가 아직 설치되지 않았습니다. 일반 프로퍼티라면 `undefined`로 조용히 넘어갈 문제가 **즉시 에러**로 드러납니다.
+
+## 실제로 언제 쓰는가
+
+**쓸 만한 경우**
+
+- 라이브러리/SDK의 내부 상태 — 외부 의존이 생기면 리팩터링이 막히는 값
+- 불변식이 있는 값 — 예: 잔액, 상태 머신의 현재 상태
+- 서브클래스가 건드리면 안 되는 구현 세부
+
+```javascript
+class Cart {
+  #items = new Map();
+  #total = 0;
+
+  add(sku, price) {
+    this.#items.set(sku, price);
+    this.#recalc();
+  }
+  #recalc() {                    // private 메서드도 가능
+    this.#total = [...this.#items.values()].reduce((a, b) => a + b, 0);
+  }
+  get total() { return this.#total; }
+}
+```
+
+`#total`을 외부에서 못 쓰므로 `items`와 어긋난 합계가 만들어질 길이 없습니다.
+
+**굳이 안 써도 되는 경우**
+
+- 사내 앱 코드에서 모두가 같은 레포를 보는 경우 — TS의 `private`로 충분
+- 테스트에서 내부 상태를 확인해야 하는 경우 — 접근 자체가 불가능합니다
+- 직렬화 대상 객체 — `JSON.stringify`에 안 잡힙니다
+
+## 흔한 오해와 함정
+
+### 1. TS `private`와 같지 않다
+
+| | TS `private` | JS `#` |
+|---|---|---|
+| 강제 시점 | 컴파일 타임만 | 런타임 |
+| 런타임 존재 | 일반 프로퍼티 | 별도 슬롯 |
+| `obj["x"]`로 접근 | 가능 (우회) | 불가능 |
+| 콘솔/직렬화 노출 | 노출됨 | 노출 안 됨 |
+
+TS의 `private`는 타입 체커에게만 하는 약속입니다. 빌드 산출물에서는 그냥 필드입니다.
+
+### 2. Proxy로 감싸면 깨진다
+
+```javascript
+class Store { #data = 1; get data() { return this.#data; } }
+
+const p = new Proxy(new Store(), {});
+p.data; // TypeError — getter의 this가 proxy이고, proxy에는 #data 슬롯이 없다
+```
+
+Proxy는 타깃의 private 슬롯을 **전달하지 않습니다.** getter가 `this`를 proxy로 받는 순간 브랜드 체크에 실패합니다. 반응형 라이브러리(Vue 2/3 reactive 등)와 private 필드를 섞을 때 자주 만나는 함정입니다. 해결책은 `get` 트랩에서 `Reflect.get(target, key, target)`처럼 receiver를 타깃으로 고정하는 것입니다.
+
+### 3. 상속해도 접근되지 않고, 이름이 겹쳐도 충돌하지 않는다
+
+```javascript
+class A { #x = "A"; getA() { return this.#x; } }
+class B extends A { #x = "B"; getB() { return this.#x; } }
+
+const b = new B();
+b.getA(); // "A"
+b.getB(); // "B"
+```
+
+두 `#x`는 서로 다른 Private Name이므로 한 인스턴스에 공존합니다. 프로토타입 체인으로 찾는 일반 프로퍼티와는 근본적으로 다른 규칙입니다.
+
+### 4. 동적 접근과 삭제는 불가능하다
+
+```javascript
+this["#x"];      // 일반 프로퍼티 조회일 뿐
+delete this.#x;  // SyntaxError
+```
+
+`#x`는 **렉시컬하게 클래스 본문 안에서만** 쓸 수 있는 식별자입니다. 오타는 문법 에러라서 안전하지만, 리플렉션이나 `Object.assign` 같은 동적 도구는 모두 무력합니다.
+
+### 5. 복제·구조분해에서 사라진다
+
+```javascript
+const copy = { ...counter };   // #count는 복사되지 않는다
+structuredClone(counter);      // 프로토타입도 private도 잃는다
+```
+
+private 상태가 있는 객체는 **복제 방법을 클래스가 직접 제공**해야 합니다(`clone()` 메서드 등).
+
+## 정리
+
+`#`의 핵심은 **"이름 규칙이 아니라, 클래스 본문만 쥘 수 있는 고유 키로 저장되는 슬롯"** 입니다.
+
+바깥에서 건드리면 안 되는 불변식이나 구현 세부가 있고 런타임 보장까지 필요할 때 쓰고, 단순 내부용 표시라면 TS `private`로 충분합니다. 다음에 `_` 접두어 필드를 만들 때, 그 값이 나중에 공개 API가 되어도 괜찮은지 한 번 물어보세요.
