@@ -1,0 +1,163 @@
+---
+title: "JS: structuredClone과 깊은 복사 — JSON.parse(JSON.stringify())를 졸업해야 하는 이유"
+date: "2026-11-17"
+category: "typescript"
+excerpt: "structuredClone은 단순한 deepClone 유틸이 아니라, postMessage가 쓰던 구조화된 복제 알고리즘(Structured Clone Algorithm)을 언어 표면으로 꺼낸 것입니다. 순환 참조, Date, Map 같은 타입을 어떻게 다루고 무엇을 복제하지 못하는지 내부 동작을 파헤칩니다."
+tags: ["JavaScript", "structuredClone", "깊은 복사", "Structured Clone Algorithm"]
+readingTime: 7
+---
+
+## structuredClone이 존재하는 이유
+
+깊은 복사는 오랫동안 언어가 제공하지 않는 기능이었습니다. 그래서 현장에는 세 가지 관용구가 자리 잡았습니다.
+
+```javascript
+const a = JSON.parse(JSON.stringify(obj)); // 1. JSON 왕복
+const b = _.cloneDeep(obj);                // 2. 라이브러리
+const c = { ...obj };                      // 3. 사실은 얕은 복사
+```
+
+문제는 1번입니다. 가장 손쉬운데 **조용히 데이터를 망가뜨립니다.**
+
+```javascript
+const src = { d: new Date(), m: new Map([[1, 2]]), u: undefined, n: NaN };
+JSON.parse(JSON.stringify(src));
+// { d: "2026-11-17T...", m: {}, n: null }
+// Date는 문자열이 되고, Map은 빈 객체, undefined는 사라지고, NaN은 null
+```
+
+예외를 던지지도 않습니다. 예약 상태나 일정 데이터 같은 Date 필드가 문자열로 바뀌었는데 타입은 여전히 Date라고 믿고 있는 상황은 OTA 서비스처럼 날짜가 핵심인 도메인에서 특히 위험합니다.
+
+`structuredClone()`은 이 틈을 메우기 위해 들어왔습니다. 흥미로운 점은 **새로 설계된 알고리즘이 아니라는 것**입니다.
+
+> 브라우저에는 이미 깊은 복사 엔진이 있었다. 다만 postMessage 뒤에 숨어 있었을 뿐이다.
+
+## 내부 동작 방식
+
+### 원래 목적은 스레드 간 데이터 전달
+
+Structured Clone Algorithm(HTML 스펙)은 `postMessage`, IndexedDB 저장, History `state` 등에서 값을 **다른 실행 컨텍스트로 넘기기 위해** 이미 쓰이고 있었습니다. 워커는 힙을 공유하지 않으므로 값을 직렬화해 반대편에서 재구성해야 하기 때문입니다. `structuredClone(value)`는 이 직렬화(StructuredSerialize)와 역직렬화(StructuredDeserialize)를 같은 컨텍스트에서 연달아 수행하는 것과 같습니다.
+
+### 순환 참조를 처리하는 방법: memory 맵
+
+JSON이 순환 참조에서 터지는 이유는 이미 방문한 객체를 기억하지 않기 때문입니다. 이 알고리즘은 **원본 → 복제본 매핑(memory)** 을 유지합니다.
+
+```
+visit(value):
+  if value is primitive → 그대로 반환
+  if memory.has(value)  → memory.get(value) 반환   // 순환/공유 참조 처리
+  clone = 타입에 맞는 빈 객체 생성
+  memory.set(value, clone)                         // 자식 순회 "전에" 등록
+  각 프로퍼티에 대해 clone[k] = visit(value[k])
+  return clone
+```
+
+핵심은 **자식을 순회하기 전에 매핑을 등록**한다는 점입니다. 그래서 순환 참조가 자연스럽게 끊기고, 하나의 객체를 두 곳에서 참조하던 **공유 구조도 보존**됩니다.
+
+```javascript
+const shared = { x: 1 };
+const src = { a: shared, b: shared };
+src.self = src;
+
+const copy = structuredClone(src);
+copy.a === copy.b;     // true  — 공유 관계 유지
+copy.self === copy;    // true  — 순환 유지
+copy.a === shared;     // false — 원본과는 완전히 분리
+```
+
+`cloneDeep` 계열 라이브러리도 같은 방식이지만, JSON 왕복은 이 두 성질을 모두 잃습니다.
+
+### 타입별 처리
+
+복제 대상은 "내부 슬롯(internal slot)"을 가진 객체인지로 갈립니다.
+
+| 대상 | 결과 |
+|---|---|
+| 원시값, Boolean/String 래퍼 | 복제 |
+| Date, RegExp(lastIndex 제외) | 복제 |
+| Map, Set, Array, 일반 객체 | 재귀 복제 |
+| ArrayBuffer, TypedArray, DataView | 바이트 복제 |
+| Error(일부 종류) | 복제 (name, message, cause 등) |
+| Blob, File, ImageBitmap | 복제 (브라우저) |
+| **함수, DOM 노드, Symbol** | **DataCloneError** |
+
+## 실제로 언제 쓰는가
+
+**structuredClone이 맞는 경우**
+
+- 불변 업데이트 전에 상태 스냅샷을 만들 때 (undo/redo 히스토리)
+- 폼 초기값을 보관해 "변경됨" 비교를 할 때
+- 외부에서 받은 객체를 변형하는 함수에서 원본 보호가 필요할 때
+
+```typescript
+// 폼 초기값 스냅샷
+const initial = structuredClone(searchFilter); // Date, Set 필드까지 안전
+```
+
+**쓰지 않아도 되는 경우**
+
+- 얕은 복사로 충분한 경우 (한 단계만 바꿀 때 `{ ...obj, k: v }`)
+- 구조적 공유(structural sharing)가 필요한 경우 — 상태 라이브러리는 바뀐 경로만 새로 만들어 참조 동일성으로 리렌더를 막습니다. 전체를 통째로 복제하면 모든 참조가 바뀌어 메모이제이션이 전부 무효화됩니다.
+
+## 흔한 오해와 함정
+
+### 1. 프로토타입과 클래스 인스턴스는 사라진다
+
+가장 자주 밟는 함정입니다. 알고리즘은 **own enumerable 데이터 프로퍼티만** 복사하고 프로토타입 체인은 복원하지 않습니다.
+
+```javascript
+class Money {
+  constructor(v) { this.v = v; }
+  format() { return `${this.v}원`; }
+}
+
+const m = structuredClone(new Money(1000));
+m.v;          // 1000
+m.format;     // undefined — 일반 Object가 되어버림
+m instanceof Money; // false
+```
+
+클래스 기반 도메인 모델이라면 복제 후 `Object.assign(Object.create(Money.prototype), m)`처럼 직접 복원하거나, 복제 메서드를 클래스에 두어야 합니다.
+
+### 2. getter/setter와 프로퍼티 디스크립터는 평탄화된다
+
+접근자 프로퍼티는 **호출된 결과값**이 데이터 프로퍼티로 복사됩니다. non-enumerable, writable 같은 속성도 유지되지 않습니다.
+
+```javascript
+const src = { get now() { return Date.now(); } };
+Object.getOwnPropertyDescriptor(structuredClone(src), "now");
+// { value: 1731800000000, writable: true, enumerable: true, configurable: true }
+```
+
+### 3. 함수가 하나라도 있으면 전체가 실패한다
+
+```javascript
+// 수정 전: 일부만 복제될 거라 기대
+structuredClone({ id: 1, onClick() {} }); // DataCloneError
+
+// 수정 후: 복제 가능한 필드만 먼저 분리
+const { onClick, ...data } = props;
+const copy = structuredClone(data);
+```
+
+특히 React props나 상태 객체에 콜백이 섞여 있을 때 런타임에서야 발견됩니다. 상태에는 직렬화 가능한 값만 두는 편이 안전합니다.
+
+### 4. transfer 옵션은 복사가 아니라 이동이다
+
+```javascript
+const buf = new ArrayBuffer(1024 * 1024);
+const copy = structuredClone(buf, { transfer: [buf] });
+buf.byteLength; // 0 — 원본은 detach 됨
+```
+
+대용량 버퍼를 복사 비용 없이 넘길 때 쓰지만, 원본이 즉시 사용 불가가 됩니다.
+
+### 5. "깊은 복사 = 빠르다"는 아니다
+
+복사 비용은 객체 크기에 비례합니다. 렌더 경로에서 큰 객체를 매번 복제하면 JSON 왕복과 비슷한 병목이 됩니다. 필요한 부분만 복제하거나 불변 업데이트를 쓰는 편이 낫습니다.
+
+## 정리
+
+structuredClone의 핵심은 **"JSON 직렬화가 아니라, 스레드 간 값 전달용 복제 알고리즘을 그대로 꺼내 쓴 것"** 입니다. 그래서 Date, Map, Set, 순환 참조에는 강하고, 함수·프로토타입·접근자에는 약합니다.
+
+데이터가 순수한 값(plain data)으로 이루어져 있다면 `JSON.parse(JSON.stringify())` 대신 structuredClone을 쓰고, 클래스 인스턴스나 함수가 섞여 있다면 복제 전에 데이터 모델부터 분리해 보세요.
