@@ -1,0 +1,151 @@
+---
+title: "JS: BigInt가 필요한 순간 — Number의 2^53 한계와 임의 정밀도 정수"
+date: "2026-11-20"
+category: "typescript"
+excerpt: "JavaScript의 Number는 IEEE 754 double이라 2^53 이상의 정수를 정확히 표현하지 못합니다. BigInt가 왜 별도 원시 타입으로 추가됐는지, 엔진 내부에서 어떻게 다뤄지는지, 그리고 JSON·혼합 연산에서 만나는 함정을 정리합니다."
+tags: ["JavaScript", "BigInt", "Number", "IEEE 754"]
+readingTime: 7
+---
+
+## BigInt가 존재하는 이유
+
+JavaScript에는 오랫동안 숫자 타입이 `Number` 하나뿐이었습니다. 그리고 `Number`는 64비트 부동소수점(IEEE 754 double)입니다. 가수부(mantissa)가 52비트(+암묵적 1비트)이므로, 정수를 **정확히** 표현할 수 있는 범위는 ±(2^53 − 1)까지입니다.
+
+```js
+Number.MAX_SAFE_INTEGER; // 9007199254740991
+9007199254740992 === 9007199254740993; // true
+```
+
+2^53을 넘으면 연속된 정수를 모두 표현할 수 없고, 가까운 표현 가능한 값으로 **반올림**됩니다. 에러가 나지 않고 조용히 틀린 값이 되는 게 문제입니다.
+
+실무에서 이 한계를 만나는 곳은 의외로 흔합니다.
+
+- 서버(Java `Long`, Go `int64`, Snowflake ID)가 내려주는 64비트 정수 ID
+- 금융·암호화·블록체인의 큰 정수 연산
+- 나노초 단위 타임스탬프 (`process.hrtime.bigint()`, `performance` 계열)
+
+> "정수인데 정수처럼 동작하지 않는" 타입을 쓰고 있었다는 사실이 핵심입니다.
+
+기존에는 문자열로 들고 다니거나 `bignumber.js`, `JSBI` 같은 라이브러리로 해결했습니다. BigInt는 이를 언어 차원의 **원시 타입**으로 올린 것입니다. 라이브러리 객체가 아니므로 `typeof`, `===`, 비교 연산자가 그대로 동작합니다.
+
+## 내부 동작 방식
+
+### Number와는 다른 표현
+
+`Number`는 고정 8바이트입니다. BigInt는 **가변 길이**입니다. 엔진(V8)은 부호 비트와 64비트 단위 "digit" 배열로 값을 힙에 저장합니다. 값이 커질수록 메모리와 연산 비용이 비례해 늘어납니다.
+
+```
+Number : [sign|exponent|mantissa]            고정 64bit, 하드웨어 FPU 연산
+BigInt : [sign][digit0][digit1]...[digitN]   가변 길이, 소프트웨어 다중 정밀도 연산
+```
+
+그래서 BigInt 연산은 CPU의 네이티브 연산 하나로 끝나지 않고, digit 배열을 순회하는 루프(곱셈은 큰 수에서 Karatsuba 등)로 처리됩니다. 작은 값에서는 `Number`보다 확실히 느립니다. 일반 루프 카운터를 BigInt로 바꾸는 건 순수한 손해입니다.
+
+### 별도 타입이라는 것의 의미
+
+```js
+typeof 10n;        // "bigint"
+10n === 10;        // false  (타입이 다름)
+10n == 10;         // true   (느슨한 비교는 값 비교)
+1n < 2;            // true   (비교 연산은 혼합 가능)
+```
+
+`BigInt`와 `Number`는 **산술 연산에서 암묵적 변환을 하지 않습니다.**
+
+```js
+1n + 1; // TypeError: Cannot mix BigInt and other types
+```
+
+이건 불편함이 아니라 의도된 설계입니다. `Number`로 변환하면 정밀도를 잃고, `BigInt`로 변환하면 소수를 표현할 수 없습니다. 어느 쪽으로 가도 정보가 손실되니, 스펙은 "명시적으로 고르라"고 강제합니다. TC39가 `+`에서 조용한 강제 변환을 허용하지 않은 이유입니다.
+
+### 연산의 의미 차이
+
+- 나눗셈은 **버림(truncation toward zero)** 입니다. `5n / 2n === 2n`
+- 단항 `+`는 BigInt에 쓸 수 없습니다 (`asm.js` 호환성 때문에 막혀 있음). `-`는 가능합니다.
+- `Math.*` 함수는 BigInt를 받지 않습니다. `Math.max(1n, 2n)`은 TypeError입니다.
+- 비트 연산은 무한 길이 2의 보수처럼 동작합니다. `>>>`는 지원하지 않습니다.
+
+## 실제로 언제 쓰는가
+
+### 64비트 ID를 다룰 때
+
+가장 흔한 케이스입니다. 서버가 `9007199254740993` 같은 ID를 JSON 숫자로 내려주면, `JSON.parse` 시점에 이미 값이 깨집니다.
+
+```js
+JSON.parse('{"id": 9007199254740993}').id; // 9007199254740992  ← 조용히 틀림
+```
+
+이 경우 BigInt로 해결하기 전에, **파싱 단계에서 이미 손상**된다는 점이 중요합니다. 가장 안전한 방법은 서버가 ID를 **문자열**로 내려주는 것입니다. 클라이언트에서 정수 연산을 할 일이 없는 ID는 문자열이 정답입니다.
+
+### 큰 정수 연산이 실제로 필요할 때
+
+```js
+// 팩토리얼, 해시, 암호화 모듈러 연산 등
+const factorial = (n) => (n <= 1n ? 1n : n * factorial(n - 1n));
+factorial(25n); // 15511210043330985984000000n
+```
+
+### 고정밀 시간 측정
+
+```js
+const start = process.hrtime.bigint(); // 나노초 단위
+// ...작업
+const elapsedNs = process.hrtime.bigint() - start;
+```
+
+나노초 단위 epoch는 2^53을 넘기 때문에 BigInt가 아니면 표현이 안 됩니다.
+
+### 금액에는?
+
+흔한 질문입니다. 금액을 **최소 단위 정수**(원, 센트)로 들고 다닌다면 대부분 `Number`로 충분합니다. 2^53 센트는 약 90조 달러입니다. BigInt는 통화 단위가 극단적으로 크거나(암호화폐의 wei 등) 환율 계산 중간값이 클 때 고려합니다.
+
+## 흔한 오해와 함정
+
+### 1. JSON.stringify가 BigInt를 직렬화하지 못한다
+
+```js
+// 수정 전
+JSON.stringify({ id: 1n });
+// TypeError: Do not know how to serialize a BigInt
+```
+
+의도적으로 막혀 있습니다. 숫자 `1`로 직렬화하면 반대편의 `JSON.parse`가 다시 `Number`로 읽어 정밀도가 깨질 수 있기 때문입니다.
+
+```js
+// 수정 후: 직렬화 방식을 명시적으로 선택
+JSON.stringify({ id: 1n }, (_, v) => (typeof v === "bigint" ? v.toString() : v));
+// '{"id":"1"}'
+```
+
+React Query의 `queryKey`, Redux DevTools, Next.js 서버 → 클라이언트 props 직렬화에서 이 에러를 자주 만납니다. 특히 **Server Component에서 Client Component로 BigInt를 props로 넘기는 경우**는 프레임워크 버전에 따라 동작이 다르므로, 경계에서 문자열로 바꿔 넘기는 편이 안전합니다.
+
+### 2. Number로 변환하는 순간 다시 손실된다
+
+```js
+const big = 9007199254740993n;
+Number(big); // 9007199254740992  ← 조용히 반올림
+```
+
+`Number(big)`은 에러를 던지지 않습니다. 변환이 필요하면 `BigInt.asIntN` / `Number.isSafeInteger(Number(x))`로 범위를 먼저 확인하세요.
+
+### 3. BigInt(소수)는 에러, BigInt(큰 Number)는 이미 늦었다
+
+```js
+BigInt(1.5);                  // RangeError
+BigInt(9007199254740993);     // 9007199254740992n  ← 리터럴 시점에 이미 반올림됨
+BigInt("9007199254740993");   // 9007199254740993n  ← 문자열에서 만들어야 정확
+```
+
+큰 값을 BigInt로 만들 때는 **`Number` 리터럴을 거치지 말고** `n` 접미사 리터럴이나 문자열을 사용해야 합니다.
+
+### 4. 성능과 호환성
+
+- 일반 정수 연산에 BigInt를 섞으면 JIT 최적화(Smi, 정수 특수화)를 못 받습니다.
+- `BigInt`는 `new`로 호출할 수 없고(`new BigInt(1)` TypeError), 래퍼 객체를 만들 이유도 없습니다.
+- 타깃이 ES2020 미만이면 `n` 리터럴이 문법 에러입니다. TypeScript는 `target`이 `ES2020` 이상이어야 합니다.
+
+## 정리
+
+BigInt는 **"Number가 정확히 표현하지 못하는 2^53 이상의 정수를 에러 없이 틀리는 대신, 명시적으로 다루게 하는 타입"** 입니다.
+
+정수 ID나 큰 정수 연산처럼 정밀도가 정확성과 직결될 때만 쓰고, 단순 식별자라면 문자열로 다루는 쪽이 더 단순합니다. 혹시 지금 프로젝트에서 `JSON.parse`로 받는 ID가 2^53을 넘을 수 있는지 한 번 확인해 보세요.
