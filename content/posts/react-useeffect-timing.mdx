@@ -1,0 +1,122 @@
+---
+title: "React: useEffect는 정확히 언제 실행되는가"
+date: "2026-11-22"
+category: "react"
+excerpt: "useEffect는 '렌더 직후'가 아니라 '커밋과 페인트 이후'에 실행됩니다. 렌더·커밋·페인트 단계와 useLayoutEffect의 차이, cleanup 순서를 내부 동작 기준으로 정리합니다."
+tags: ["React", "useEffect", "useLayoutEffect", "렌더링"]
+readingTime: 7
+---
+
+## useEffect의 타이밍이 중요한 이유
+
+클래스 컴포넌트에는 `componentDidMount`, `componentDidUpdate`가 있었습니다. 둘 다 DOM이 커밋된 직후 **동기적으로** 실행됩니다. 편하지만 비용이 있습니다. 콜백이 무거우면 브라우저는 그 시간만큼 페인트를 못 합니다. 데이터 구독이나 로깅 같은 일이 화면 표시를 막는 셈입니다.
+
+React는 이 구분을 훅에서 나눴습니다.
+
+- **화면 표시와 직접 관련된 작업** → `useLayoutEffect` (페인트 전, 동기)
+- **그 외의 부수 효과** → `useEffect` (페인트 후, 비동기)
+
+> "사용자가 화면을 보는 것이 먼저, 부수 효과는 그다음."
+
+useEffect는 이 철학이 반영된 기본값입니다.
+
+## 내부 동작 방식
+
+### 렌더, 커밋, 페인트는 다른 단계다
+
+```
+[Render]  컴포넌트 함수 실행, 새 Fiber 트리 계산 (DOM 변경 없음)
+   ↓
+[Commit]  DOM 변경 반영
+          └ useLayoutEffect cleanup → useLayoutEffect 실행 (동기)
+   ↓
+[Paint]   브라우저가 화면을 그림
+   ↓
+[Passive] useEffect cleanup → useEffect 실행
+```
+
+useEffect는 렌더 중에 실행되지 않습니다. 렌더 중에는 "이런 effect를 예약해 둔다"는 정보만 Fiber의 `updateQueue`에 effect 객체로 쌓입니다. 커밋 단계에서 DOM을 바꾼 뒤, React는 이 effect들을 **passive effect**로 표시하고 스케줄러에 별도 작업으로 등록합니다.
+
+### 예약된 시점의 값을 본다
+
+effect 콜백은 해당 렌더의 클로저입니다. 실행이 비동기로 밀려도 **그 렌더의 props와 state**를 봅니다. 최신 값이 필요하면 ref를 써야 합니다.
+
+### 페인트 이후가 항상 보장되는 것은 아니다
+
+일반적으로 useEffect는 페인트 이후에 실행되지만 예외가 있습니다.
+
+- 클릭 같은 **이산 이벤트로 발생한 업데이트**는 React가 다음 렌더 전에 passive effect를 먼저 flush합니다. 사용자 상호작용 직후에는 상태 일관성이 더 중요하다고 보기 때문입니다.
+- 다음 렌더가 시작되기 전에는 대기 중인 effect가 항상 먼저 flush됩니다. 즉 effect 실행 순서는 렌더 순서를 뒤집지 않습니다.
+
+그래서 "useEffect는 항상 페인트 뒤"라고 외우는 것보다 **"커밋 이후에 스케줄되며, 늦어도 다음 렌더 전에는 실행된다"**로 이해하는 편이 정확합니다.
+
+### cleanup 순서
+
+의존성이 바뀌면 순서는 다음과 같습니다.
+
+1. 새 렌더 → 커밋
+2. **이전 렌더의** cleanup 전부 실행
+3. **새 렌더의** effect 실행
+
+cleanup은 "이전 값"으로 실행됩니다. 컴포넌트 단위로 보면 unmount 시에는 부모가 먼저 cleanup되고 자식이 나중에 정리되는 순서도 아닙니다. React 18부터는 같은 컴포넌트 안에서 effect 정리가 모두 끝난 뒤 새 effect가 실행됩니다.
+
+## 실제로 언제 쓰는가
+
+**useEffect가 적합한 경우**
+- 외부 시스템과의 동기화 (구독, 소켓, 타이머, 로깅/분석 이벤트)
+- 렌더 결과와 무관한 후처리
+
+**useLayoutEffect가 필요한 경우**
+- 렌더된 DOM의 크기·위치를 측정해 곧바로 스타일에 반영해야 할 때 (툴팁 위치 계산 등)
+
+```tsx
+// src/components/Tooltip.tsx
+useLayoutEffect(() => {
+  const { height } = ref.current!.getBoundingClientRect();
+  setOffset(height); // 페인트 전에 다시 렌더 → 깜빡임 없음
+}, []);
+```
+
+여기서 `useEffect`를 쓰면 첫 프레임이 잘못된 위치로 그려졌다가 다음 프레임에 이동하는 **플리커**가 보입니다. 반대로 측정이 필요 없는 곳에 useLayoutEffect를 쓰면 페인트를 지연시키기만 합니다.
+
+## 흔한 오해와 함정
+
+### 1. "useEffect는 마운트 시 한 번만 실행된다"
+
+의존성 배열 `[]`는 그렇게 동작하지만, 개발 모드의 StrictMode에서는 mount → unmount → mount를 일부러 한 번 더 돌립니다. cleanup이 없는 effect는 이때 중복 실행 문제가 드러납니다.
+
+### 2. effect 안에서 상태를 파생시키기
+
+```tsx
+// 수정 전: 렌더 → effect → setState → 재렌더 (두 번 그려짐)
+useEffect(() => {
+  setFullName(`${first} ${last}`);
+}, [first, last]);
+
+// 수정 후: 렌더 중에 계산
+const fullName = `${first} ${last}`;
+```
+
+effect로 상태를 동기화하면 잘못된 값으로 한 번 그려진 뒤 다시 그립니다. 렌더 중 계산할 수 있는 값은 effect에 넣을 이유가 없습니다.
+
+### 3. SSR에서는 effect가 실행되지 않는다
+
+서버 렌더링에서는 커밋 자체가 없으므로 useEffect는 호출되지 않습니다. useLayoutEffect는 서버에서 경고가 나기도 합니다(React 18 기준). 브라우저 전용 로직의 위치로 effect가 쓰이는 이유입니다.
+
+### 4. 비동기 응답의 순서
+
+effect 안의 fetch는 cleanup에서 취소(또는 무시)하지 않으면, 빠르게 의존성이 바뀔 때 늦게 도착한 이전 응답이 최신 상태를 덮어씁니다.
+
+```tsx
+useEffect(() => {
+  const controller = new AbortController();
+  fetch(url, { signal: controller.signal }).then(...);
+  return () => controller.abort();
+}, [url]);
+```
+
+## 정리
+
+useEffect의 핵심은 **"커밋 이후에 예약되고, 화면 표시를 막지 않는다"** 입니다.
+
+외부 시스템과의 동기화는 useEffect, 페인트 전에 DOM 측정 결과를 반영해야 한다면 useLayoutEffect를 쓰세요. 그리고 effect를 쓰기 전에, 렌더 중 계산으로 해결되는 일은 아닌지 먼저 물어보세요.
