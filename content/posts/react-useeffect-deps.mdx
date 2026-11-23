@@ -1,0 +1,128 @@
+---
+title: "React: useEffect 의존성 배열 — 린트 규칙이 아니라 동기화 계약이다"
+date: "2026-11-23"
+category: "react"
+excerpt: "의존성 배열은 '언제 실행할지 정하는 옵션'이 아니라, effect가 클로저로 캡처한 값과 React가 가진 최신 값을 동기화하기 위한 계약입니다. Object.is 비교와 stale closure의 원리를 짚습니다."
+tags: ["React", "useEffect", "Dependency Array", "Closure"]
+readingTime: 7
+---
+
+## 의존성 배열이 존재하는 이유
+
+많은 개발자가 의존성 배열을 "이 값이 바뀔 때만 effect를 실행하는 필터"로 이해합니다. 그래서 effect를 **한 번만** 실행하고 싶을 때 `[]`를 넣고, 린트 경고가 거슬리면 `// eslint-disable-next-line`을 붙입니다.
+
+React의 설계 의도는 다릅니다. effect는 **"렌더 결과와 외부 시스템을 일치시키는 동기화 코드"** 입니다. 의존성 배열은 그 동기화가 어떤 값에 의존하는지를 **선언**하는 곳이고, 실행 시점은 그 선언의 결과일 뿐입니다.
+
+> 의존성은 내가 고르는 것이 아니라, 코드가 읽는 값에 의해 결정되는 것이다.
+
+effect 안에서 `userId`를 읽는다면 의존성에 `userId`가 있는 것은 선택이 아니라 사실입니다. 배열에서 빼면 사실을 숨기는 것이고, 그 대가는 버그로 돌아옵니다.
+
+## 내부 동작 방식
+
+### 렌더마다 effect 함수는 새로 만들어진다
+
+컴포넌트는 렌더될 때마다 함수 본문을 다시 실행하고, 그때마다 **새 effect 함수(새 클로저)** 가 생깁니다. 각 effect는 자신이 만들어진 렌더의 `props`, `state`를 캡처합니다.
+
+```
+렌더 #1: count=0  → effect#1 (count=0 캡처)
+렌더 #2: count=1  → effect#2 (count=1 캡처)
+```
+
+### 비교는 Object.is, 얕게, 순서대로
+
+React는 hook 객체에 이전 deps 배열을 저장해 둡니다. 다음 렌더에서 새 deps와 **인덱스별로 `Object.is`** 비교하고, 하나라도 다르면 effect를 다시 실행 대상으로 표시합니다. 모두 같으면 새로 만든 effect 함수는 **버려지고**, 이전 클로저가 그대로 남습니다.
+
+```tsx
+// 개념적 의사 코드
+function areHookInputsEqual(next, prev) {
+  for (let i = 0; i < prev.length; i++) {
+    if (Object.is(next[i], prev[i])) continue;
+    return false;
+  }
+  return true;
+}
+```
+
+여기서 핵심은 마지막 문장입니다. deps가 같으면 **이전 렌더의 클로저가 계속 살아 있습니다.** 이것이 stale closure의 정체입니다.
+
+### 실행 순서: cleanup → effect
+
+deps가 달라지면 React는 **이전 effect의 cleanup을 먼저** 실행하고, 그다음 새 effect를 실행합니다. cleanup도 이전 렌더의 값을 캡처하고 있으므로, "정리하는 대상"과 "정리하는 코드"가 항상 짝을 이룹니다.
+
+## 실제로 언제 쓰는가
+
+의존성 배열은 세 가지 모양만 있습니다.
+
+| 형태 | 의미 |
+|---|---|
+| 생략 | 매 렌더 후 실행 |
+| `[]` | effect가 렌더 값에 **전혀 의존하지 않음**을 주장 |
+| `[a, b]` | a, b를 읽는다고 선언 |
+
+`[]`는 "한 번만 실행"이 아니라 "의존하는 값이 없다"는 **주장**입니다. 그 주장이 거짓이면 stale closure가 생깁니다.
+
+의존성이 너무 자주 바뀌어 effect가 과하게 도는 상황이라면, 배열을 속이기보다 **effect의 의존성 자체를 줄이는 방법**을 씁니다.
+
+```tsx
+// src/features/search/useSearch.ts
+// 1) 값 대신 updater 사용 → count 의존성 제거
+useEffect(() => {
+  const id = setInterval(() => setCount((c) => c + 1), 1000);
+  return () => clearInterval(id);
+}, []);
+
+// 2) 객체 대신 primitive를 의존성으로
+const { page, size } = params;
+useEffect(() => {
+  fetchList({ page, size });
+}, [page, size]);
+```
+
+여행/OTA 서비스의 검색 필터처럼 객체 상태가 많은 화면에서는 필터 객체를 통째로 넣기보다, effect가 실제로 읽는 필드만 꺼내 의존성으로 쓰는 편이 안전합니다.
+
+## 흔한 오해와 함정
+
+### 1. `[]`로 막으면 안전하다는 착각
+
+```tsx
+// 수정 전: 항상 첫 렌더의 query만 사용
+useEffect(() => {
+  const id = setInterval(() => search(query), 3000);
+  return () => clearInterval(id);
+}, []);
+
+// 수정 후: query가 바뀌면 타이머를 새로 만든다
+useEffect(() => {
+  const id = setInterval(() => search(query), 3000);
+  return () => clearInterval(id);
+}, [query]);
+```
+
+수정 전 코드는 사용자가 검색어를 바꿔도 **첫 검색어로 계속 요청**합니다.
+
+### 2. 렌더 중에 만든 객체/함수를 deps에 넣기
+
+```tsx
+function List({ userId }) {
+  const options = { userId }; // 매 렌더 새 참조
+  useEffect(() => {
+    load(options);
+  }, [options]); // 매 렌더 실행
+}
+```
+
+`Object.is`는 참조 비교이므로 내용이 같아도 매번 다릅니다. 해법은 `useMemo`로 감싸기보다, **effect 안으로 객체 생성을 옮기거나** primitive만 의존성으로 쓰는 것입니다.
+
+### 3. 린트 경고를 끄는 것
+
+`react-hooks/exhaustive-deps` 경고는 스타일 지적이 아니라 **stale closure 가능성 탐지**입니다. 끄고 싶어질 때는 "이 effect가 정말 이 값에 의존하는가?"를 다시 묻고, 의존한다면 코드 구조(updater, 이벤트 핸들러로 이동, effect 분리)를 바꾸는 것이 정공법입니다.
+
+### 4. 의존성 배열로 "이벤트"를 표현하기
+
+"버튼을 눌렀을 때 실행"은 동기화가 아니라 **이벤트**입니다. state를 하나 만들어 effect deps로 감지하는 대신 이벤트 핸들러에서 직접 처리하세요.
+
+## 정리
+
+useEffect 의존성 배열의 핵심은 **"effect가 읽는 렌더 값의 목록을 정직하게 선언하는 계약"** 입니다.
+
+deps가 같으면 이전 클로저가 유지된다는 사실만 기억해도 stale closure 대부분을 설명할 수 있습니다. 의존성이 거슬린다면 배열을 고치지 말고 effect가 읽는 값을 줄이는 방향으로 코드를 바꾸세요.
