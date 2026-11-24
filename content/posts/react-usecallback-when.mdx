@@ -1,0 +1,141 @@
+---
+title: "React: useCallback을 써야 하는 타이밍"
+date: "2026-11-24"
+category: "react"
+excerpt: "useCallback은 함수를 빠르게 만들어주지 않습니다. 참조 동일성(referential equality)이 실제로 값을 가지는 지점이 어디인지 알아야 쓸 곳과 안 쓸 곳이 보입니다."
+tags: ["React", "useCallback", "Hooks", "Memoization"]
+readingTime: 7
+---
+
+## useCallback이 존재하는 이유
+
+React 컴포넌트는 렌더링마다 함수 본문 전체를 다시 실행합니다. 그래서 컴포넌트 안에서 선언한 함수는 **렌더링마다 새로운 객체**입니다.
+
+```tsx
+function Parent() {
+  const onClick = () => {}; // 렌더링마다 새로운 참조
+  return <Child onClick={onClick} />;
+}
+```
+
+함수를 만드는 비용 자체는 거의 0입니다. 문제는 **참조가 바뀐다는 사실**입니다. React는 props, 의존성 배열을 `Object.is`로 비교합니다. 내용이 같아도 참조가 다르면 "바뀌었다"고 판단합니다.
+
+> useCallback의 목적은 함수 생성 비용 절감이 아니라 **참조 안정성 확보**입니다.
+
+참조가 바뀌어서 실제로 손해를 보는 곳은 딱 두 군데입니다.
+
+1. `React.memo`로 감싼 자식의 props 비교
+2. `useEffect`, `useMemo`, 다른 `useCallback`의 의존성 배열
+
+이 둘이 아니라면 useCallback은 얻는 것 없이 비용만 만듭니다.
+
+## 내부 동작 방식
+
+useCallback은 사실상 `useMemo`의 특수한 경우입니다.
+
+```js
+// 개념적으로 동일
+const memoized = useCallback(fn, deps);
+const memoized = useMemo(() => fn, deps);
+```
+
+마운트 시점에 React는 Fiber의 hook 노드에 `[fn, deps]`를 저장합니다. 업데이트 시점에는 이전 deps와 새 deps를 `Object.is`로 하나씩 비교합니다. 전부 같으면 **이전에 저장한 함수를 그대로 반환**하고, 하나라도 다르면 새 함수를 저장·반환합니다.
+
+여기서 중요한 사실이 있습니다.
+
+- 인자로 넘긴 새 함수 `fn`은 **매 렌더링마다 이미 생성됩니다.** useCallback은 그걸 버릴 뿐입니다.
+- 거기에 deps 배열 생성, 비교 비용, hook 노드 메모리가 추가됩니다.
+
+즉 useCallback은 "함수 생성을 막는 것"이 아니라 "이전 참조를 재사용하는 것"입니다. 단독으로는 항상 약간 손해입니다. 하위에서 이득을 봐야 상쇄됩니다.
+
+## 실제로 언제 쓰는가
+
+### 1. React.memo 자식에게 넘기는 콜백
+
+```tsx
+const Row = React.memo(function Row({ item, onSelect }: Props) {
+  return <li onClick={() => onSelect(item.id)}>{item.name}</li>;
+});
+
+function List({ items }: { items: Item[] }) {
+  const onSelect = useCallback((id: string) => {
+    setSelected(id); // setState는 참조가 안정적이라 deps 불필요
+  }, []);
+
+  return items.map((item) => <Row key={item.id} item={item} onSelect={onSelect} />);
+}
+```
+
+예약 목록처럼 수백 개의 행을 그리는 화면에서 `Row`가 무거울 때 의미가 있습니다. 단, **자식이 memo가 아니면 아무 효과가 없습니다.** 부모가 리렌더링되면 자식도 어차피 리렌더링되기 때문입니다.
+
+### 2. useEffect 의존성으로 쓰이는 함수
+
+```tsx
+const fetchPrice = useCallback(async () => {
+  const res = await fetch(`/api/price?hotel=${hotelId}`);
+  setPrice(await res.json());
+}, [hotelId]);
+
+useEffect(() => {
+  fetchPrice();
+}, [fetchPrice]);
+```
+
+함수가 deps에 들어가면 참조가 바뀔 때마다 effect가 재실행됩니다. 의도한 재실행 조건(`hotelId`)만 남기고 싶을 때 useCallback이 그 조건을 함수 안에 캡슐화해 줍니다.
+
+다만 이 경우 함수를 effect 안으로 옮기는 편이 더 단순한 경우가 많습니다. 다른 곳에서도 쓰는 함수일 때만 useCallback을 고려하세요.
+
+### 3. 커스텀 훅이 반환하는 함수
+
+훅을 쓰는 쪽이 그 함수를 deps에 넣을지 알 수 없습니다. 라이브러리나 공용 훅이라면 반환 함수의 참조를 안정적으로 유지하는 것이 계약이 됩니다.
+
+### 쓰지 않아도 되는 경우
+
+- 네이티브 DOM 요소(`<button onClick={...}>`)에 넘기는 핸들러
+- memo 처리되지 않은 자식에게 넘기는 함수
+- 렌더링 비용이 낮은 컴포넌트
+
+## 흔한 오해와 함정
+
+### 함정 1: deps가 매번 바뀌면 의미가 없다
+
+```tsx
+// 수정 전: items가 매 렌더링마다 새 배열이면 useCallback이 매번 새 함수를 만든다
+const onSelect = useCallback((id) => {
+  console.log(items.find((i) => i.id === id));
+}, [items]);
+```
+
+deps가 불안정하면 useCallback은 무용지물입니다. 앞단의 참조 안정성 문제를 먼저 해결해야 합니다. 함수형 업데이트나 `useRef`로 최신 값을 읽으면 deps를 줄일 수 있습니다.
+
+```tsx
+// 수정 후: 최신 값을 ref로 읽어 deps를 비운다
+const itemsRef = useRef(items);
+itemsRef.current = items;
+
+const onSelect = useCallback((id) => {
+  console.log(itemsRef.current.find((i) => i.id === id));
+}, []);
+```
+
+### 함정 2: memo 자식에 인라인 객체/배열을 같이 넘긴다
+
+콜백만 안정화하고 `style={{...}}`나 `options={[...]}` 같은 객체 props를 인라인으로 넘기면 memo는 여전히 깨집니다. **비교는 props 전체에 대해 일어납니다.**
+
+### 함정 3: stale closure
+
+deps를 빠뜨리면 함수가 옛 렌더링의 state를 계속 붙잡습니다. `exhaustive-deps` 린트 규칙을 끄고 해결하려 하지 마세요. 끄는 순간 버그가 조용해질 뿐입니다.
+
+### 함정 4: "일단 다 감싸자"
+
+모든 함수에 useCallback을 쓰면 코드는 읽기 어려워지고, 위에서 본 비교 비용과 메모리가 쌓입니다. 측정 없이 얻는 이득은 없습니다.
+
+### React Compiler 이후
+
+React Compiler가 켜져 있으면 컴파일러가 자동으로 메모이제이션합니다. 새 코드에서는 수동 useCallback의 필요성이 크게 줄어듭니다. 그래도 effect 의존성처럼 **동작의 정확성**에 걸린 경우는 명시적으로 남겨두는 편이 안전합니다.
+
+## 정리
+
+useCallback의 핵심은 **"함수를 캐싱하는 것"이 아니라 "참조를 안정시키는 것"** 입니다.
+
+`React.memo` 자식의 props이거나 hook 의존성 배열에 들어가는 함수일 때만 쓰세요. 이 둘에 해당하지 않으면 지우는 쪽이 대개 옳습니다. 쓰기 전에 "이 참조가 바뀌어서 지금 실제로 무엇이 손해인가?"를 먼저 물어보세요.
