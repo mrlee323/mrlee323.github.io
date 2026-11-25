@@ -1,0 +1,125 @@
+---
+title: "React: useMemo의 적절한 사용, 메모이제이션에도 비용이 있다"
+date: "2026-11-25"
+category: "react"
+excerpt: "useMemo는 공짜 최적화가 아니라 메모리와 비교 비용을 지불하고 계산을 건너뛰는 거래입니다. 내부에서 캐시가 어떻게 동작하는지 보고, 써야 할 때와 쓰지 말아야 할 때의 기준을 잡습니다."
+tags: ["React", "useMemo", "메모이제이션", "렌더링 최적화"]
+readingTime: 7
+---
+
+## useMemo가 존재하는 이유
+
+React 컴포넌트는 렌더링마다 함수 본문 전체를 다시 실행합니다. 이게 선언적 UI의 대가입니다. 상태가 바뀌면 "처음부터 다시 계산하고 결과만 비교한다"는 모델이죠.
+
+문제는 두 가지 상황에서 이 모델이 아프다는 점입니다.
+
+1. **계산 자체가 비싼 경우** — 수천 건 리스트의 필터링·정렬·집계
+2. **참조 동일성이 중요한 경우** — 객체/배열이 `memo` 컴포넌트의 props나 훅의 의존성 배열로 들어갈 때
+
+렌더링마다 `{ a: 1 }`을 만들면 값은 같아도 **참조는 매번 다릅니다.** 자바스크립트의 `Object.is` 비교는 값이 아니라 참조를 보기 때문입니다. useMemo는 이 두 문제에 대한 답입니다. 다만 둘은 목적이 완전히 다릅니다. 하나는 *계산을 아끼는 것*, 하나는 *참조를 고정하는 것*입니다.
+
+> 메모이제이션은 최적화가 아니라 **거래**입니다. 무엇을 내주고 무엇을 얻는지 알아야 합니다.
+
+## 내부 동작 방식
+
+useMemo는 Fiber 노드의 훅 연결 리스트에 `[value, deps]` 쌍을 저장합니다. 개념적으로는 이렇습니다.
+
+```javascript
+// 개념을 단순화한 useMemo (실제 React 소스의 mountMemo / updateMemo 흐름)
+function updateMemo(factory, nextDeps) {
+  const hook = getCurrentHook();
+  const [prevValue, prevDeps] = hook.memoizedState;
+
+  if (nextDeps !== null && areHookInputsEqual(nextDeps, prevDeps)) {
+    return prevValue; // factory 실행 없이 캐시 반환
+  }
+  const nextValue = factory();
+  hook.memoizedState = [nextValue, nextDeps];
+  return nextValue;
+}
+```
+
+여기서 짚어야 할 지점이 있습니다.
+
+- **캐시 크기는 1개**입니다. 이전 의존성 하나와만 비교합니다. 의존성이 A→B→A로 돌아와도 A 결과를 기억하지 않습니다. lodash `memoize` 같은 키-값 캐시가 아닙니다.
+- 비교는 `Object.is`로 **의존성 배열의 각 요소를 순서대로** 합니다. 비교 비용 자체는 작지만 0은 아닙니다.
+- 의존성 배열이 없으면(`undefined`) 매 렌더 재계산합니다.
+- React는 **캐시를 버릴 수 있다**고 문서에 명시합니다. 성능 힌트이지 의미론적 보장이 아닙니다. 개발 중 Fast Refresh나 컴포넌트가 Suspense 중 마운트되다 취소되는 경우에 실제로 캐시가 날아갑니다.
+
+즉 useMemo가 지불하는 비용은 **훅 슬롯 + 이전 값 보관(메모리) + 렌더마다 deps 비교 + factory 클로저 생성**입니다. 클로저는 memo 여부와 상관없이 매 렌더 만들어집니다. 계산을 건너뛰는 것이지, 함수 생성을 건너뛰는 것이 아닙니다.
+
+## 실제로 언제 쓰는가
+
+### 1. 측정해서 비싼 계산
+
+"비싸다"는 감이 아니라 숫자로 정합니다. 개발자 도구 Profiler나 `console.time`으로 재보고, 기준은 보통 **1ms 이상**, 느린 기기를 감안하면 CPU 스로틀링 환경에서 확인합니다.
+
+```tsx
+// src/features/hotel/HotelList.tsx
+const sortedHotels = useMemo(
+  () => hotels.filter(matchesFilter(filter)).sort(byPriceThenRating),
+  [hotels, filter]
+);
+```
+
+여행/OTA 도메인에서 검색 결과 수백 건을 필터·정렬하는 화면이 대표적입니다. 이 컴포넌트가 타이핑 중인 입력창 상태 때문에 계속 리렌더된다면 효과가 큽니다.
+
+### 2. memo 컴포넌트에 넘기는 객체·배열
+
+```tsx
+const options = useMemo(() => ({ currency, locale }), [currency, locale]);
+return <PriceTable options={options} />; // PriceTable = React.memo(...)
+```
+
+이 경우 useMemo의 가치는 **자식의 memo가 깨지지 않게 하는 것**입니다. 자식이 `memo`가 아니라면 참조를 고정해도 얻는 게 없습니다.
+
+### 3. 다른 훅의 의존성으로 쓰이는 값
+
+객체를 만들어 `useEffect` 의존성에 넣으면 매 렌더 이펙트가 재실행됩니다. 이때는 성능 최적화가 아니라 **정확성** 문제입니다. 다만 먼저 객체를 이펙트 안으로 옮기거나 원시값만 의존성에 쓸 수 있는지 확인하는 게 더 좋은 해법인 경우가 많습니다.
+
+### 쓰지 않아도 되는 경우
+
+- 단순 산술, 문자열 조합, 작은 배열의 `map`
+- 자식이 `memo`가 아니고 부모가 자주 안 바뀌는 경우
+- 의존성이 매 렌더 바뀌는 경우 (캐시 적중률 0%)
+- 컴포넌트 외부로 뺄 수 있는 상수 (`const OPTIONS = {...}`를 모듈 스코프로)
+
+## 흔한 오해와 함정
+
+### 함정 1: 의존성이 매번 바뀌면 비용만 낸다
+
+```tsx
+// 수정 전: filter 객체가 매 렌더 새로 만들어짐 → 캐시는 항상 miss
+const filter = { keyword, minPrice };
+const result = useMemo(() => search(items, filter), [items, filter]);
+
+// 수정 후: 원시값을 의존성으로
+const result = useMemo(
+  () => search(items, { keyword, minPrice }),
+  [items, keyword, minPrice]
+);
+```
+
+수정 전 코드는 useMemo를 쓰고도 매번 재계산하면서 비교 비용과 메모리까지 냅니다. 사용하지 않은 것보다 나쁩니다.
+
+### 함정 2: 메모이제이션 체인이 한 곳에서 끊긴다
+
+A를 memo해서 B에 넘기고, B를 memo해서 `memo` 컴포넌트에 넘겼는데, 중간에 매 렌더 바뀌는 값이 하나 끼면 전체가 무효화됩니다. 메모이제이션은 **끝까지 이어져야** 의미가 있습니다. 이 구조를 유지하기 어렵다는 게 React Compiler가 나온 배경 중 하나입니다.
+
+### 함정 3: 의미론을 useMemo에 맡기기
+
+"이 함수는 딱 한 번만 실행되어야 한다"를 useMemo로 보장하려 하면 안 됩니다. 캐시는 버려질 수 있습니다. 한 번만 실행해야 하는 로직은 이벤트 핸들러나 effect, 서버 쪽에 있어야 합니다.
+
+### 함정 4: useMemo로 렌더 비용을 줄였다고 착각
+
+useMemo는 *이 컴포넌트의 계산*만 건너뜁니다. 자식 트리 리렌더는 막지 못합니다. 리렌더 자체가 문제라면 상태를 아래로 내리거나(state colocation), `children`으로 넘기는 구조 변경이 훨씬 싸고 강력합니다.
+
+### 함정 5: 부수효과나 변경이 있는 factory
+
+factory는 순수해야 합니다. StrictMode는 개발 중 factory를 두 번 호출해 이를 드러냅니다.
+
+## 정리
+
+useMemo의 핵심은 **"비용을 내고 계산 또는 참조 동일성을 산다"** 는 점입니다.
+
+측정해서 비싼 계산이거나, `memo` 컴포넌트·훅 의존성에 들어가는 참조를 고정해야 할 때만 쓰세요. 그 외에는 상태 위치를 바꾸는 구조 개선이 먼저입니다. 다음에 useMemo를 추가하기 전에, 이 값이 **실제로 병목인지**, 그리고 **의존성이 안정적인지** 두 가지를 확인해 보세요.
