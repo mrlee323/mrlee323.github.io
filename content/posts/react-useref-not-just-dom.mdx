@@ -1,0 +1,154 @@
+---
+title: "useRef는 DOM 참조만이 아니다: 렌더 사이에 살아남는 가변 상자"
+date: "2026-11-26"
+category: "react"
+excerpt: "useRef는 '리렌더를 일으키지 않고 렌더 사이에 값을 보존해야 한다'는 문제를 풀기 위한 탈출구입니다. 내부 구조와 렌더 중 접근 금지 규칙, 흔한 실수까지 정리합니다."
+tags: ["React", "useRef", "Hooks", "Fiber"]
+readingTime: 7
+---
+
+## useRef가 존재하는 이유
+
+함수 컴포넌트는 렌더마다 처음부터 다시 실행됩니다. 지역 변수는 매 렌더 새로 만들어지고, 값을 유지하려면 `useState`가 필요합니다. 그런데 `useState`는 값을 바꾸면 **리렌더가 일어납니다**.
+
+현실에는 이 둘 사이의 요구가 있습니다.
+
+- 렌더 사이에 값을 **기억**해야 한다 (지역 변수로는 불가능)
+- 하지만 값이 바뀌어도 **화면은 다시 그릴 필요가 없다** (state로는 낭비)
+
+타이머 ID, 이전 props 값, 외부 라이브러리 인스턴스, 마지막 요청 토큰이 대표적입니다. `useRef`는 이 틈을 메우는 "화면과 연결되지 않은 가변 저장소"입니다. DOM 참조는 이 저장소를 React가 `ref` 속성으로 채워주는 **한 가지 용례**일 뿐입니다.
+
+## 내부 동작 방식
+
+개념적으로 `useRef`는 거의 이 정도입니다.
+
+```js
+// 개념 모델 (실제 구현은 훅 리스트에 저장됨)
+function useRef(initialValue) {
+  const hook = mountOrUpdateHook();
+  if (isMount) {
+    hook.memoizedState = { current: initialValue };
+  }
+  return hook.memoizedState;
+}
+```
+
+핵심은 세 가지입니다.
+
+1. **같은 객체를 반환한다.** 마운트 때 `{ current }` 객체를 한 번 만들어 Fiber의 훅 리스트(`memoizedState`)에 저장하고, 이후 렌더에서는 항상 그 객체를 돌려줍니다. 참조 동일성이 보장되므로 의존성 배열에 넣어도 변하지 않습니다.
+2. **`current` 변경은 React가 모른다.** 일반 객체의 프로퍼티 대입일 뿐이라 setter도, 스케줄링도 없습니다. 그래서 리렌더가 안 일어납니다.
+3. **DOM 연결은 commit 단계에서 일어난다.** `<div ref={r}>`이면 React가 DOM을 만든 뒤, commit 단계의 layout 시점에 `r.current = node`를 대입하고, 언마운트 시 `null`로 되돌립니다.
+
+```
+render 단계  : 컴포넌트 실행 (ref.current는 아직 이전 값 / null)
+commit 단계  : DOM 반영 → ref.current = DOM node
+effect 단계  : useEffect 안에서는 ref.current 사용 가능
+```
+
+즉 `useRef`는 state와 달리 **스냅샷이 아닙니다.** state는 렌더마다 고정된 값을 클로저로 캡처하지만, ref는 항상 최신 값을 담은 하나의 상자를 가리킵니다.
+
+## 실제로 언제 쓰는가
+
+**1. 타이머/구독 핸들 보관**
+
+```tsx
+const timerRef = useRef<number | null>(null);
+
+const start = () => {
+  timerRef.current = window.setTimeout(save, 1000);
+};
+const cancel = () => {
+  if (timerRef.current) clearTimeout(timerRef.current);
+};
+```
+
+핸들이 바뀐다고 UI가 바뀔 일은 없으므로 state가 아니라 ref가 맞습니다.
+
+**2. 최신 값을 stale closure 없이 읽기**
+
+```tsx
+const latest = useRef(onChange);
+useEffect(() => {
+  latest.current = onChange;
+});
+
+useEffect(() => {
+  const id = setInterval(() => latest.current(), 1000);
+  return () => clearInterval(id);
+}, []); // 콜백이 바뀌어도 인터벌을 다시 만들지 않는다
+```
+
+의존성 배열을 거짓말하지 않으면서 구독을 재설정하지 않는 패턴입니다. 최신 이벤트 핸들러를 담는 용도로 널리 쓰입니다.
+
+**3. 이전 렌더의 값 기억**
+
+```tsx
+function usePrevious<T>(value: T) {
+  const ref = useRef<T>();
+  useEffect(() => {
+    ref.current = value;
+  });
+  return ref.current; // 이번 렌더에서는 아직 갱신 전 값
+}
+```
+
+**4. DOM 및 외부 인스턴스 참조**
+
+포커스, 스크롤, 측정, 지도·차트 같은 명령형 라이브러리 인스턴스를 붙들 때 씁니다.
+
+판단 기준은 하나입니다. **"이 값이 바뀌면 화면이 달라져야 하는가?"** 그렇다면 state, 아니라면 ref입니다.
+
+## 흔한 오해와 함정
+
+### 1. 렌더 중에 ref를 읽고 쓰기
+
+```tsx
+// 수정 전
+function Counter() {
+  const renders = useRef(0);
+  renders.current += 1; // 렌더 중 쓰기
+  return <p>{renders.current}</p>; // 렌더 중 읽기
+}
+```
+
+렌더는 순수해야 합니다. React는 Strict Mode에서 렌더를 두 번 실행하고, Concurrent 렌더링에서는 렌더가 중단·폐기될 수도 있습니다. 렌더 중 ref를 변경하면 결과가 실행 횟수에 따라 달라집니다. ref 읽기/쓰기는 **이벤트 핸들러와 effect 안에서** 하는 것이 규칙입니다. (지연 초기화 `if (ref.current === null) ref.current = ...` 정도만 예외로 허용됩니다.)
+
+```tsx
+// 수정 후
+function Counter() {
+  const renders = useRef(0);
+  useEffect(() => {
+    renders.current += 1;
+  });
+  return <button onClick={() => console.log(renders.current)}>log</button>;
+}
+```
+
+### 2. ref 값을 화면에 그리려는 시도
+
+`ref.current`를 바꿔도 리렌더가 없으니 JSX에 넣은 값은 **다음 렌더 때에야** 갱신됩니다. 화면에 보여줄 값이라면 state여야 합니다. "리렌더가 번거로워서 ref로 바꿨더니 화면이 안 바뀐다"는 버그의 대부분이 이 경우입니다.
+
+### 3. `useRef(expensive())`의 초기값
+
+초기값 인자는 **매 렌더 평가됩니다.** 첫 렌더 이후에는 버려질 뿐입니다. 무거운 객체라면 지연 초기화를 쓰세요.
+
+```tsx
+const ref = useRef<Heavy | null>(null);
+if (ref.current === null) {
+  ref.current = new Heavy();
+}
+```
+
+### 4. 콜백 ref와 `ref.current` 타이밍 혼동
+
+`useEffect`보다 먼저 필요한 시점(`useLayoutEffect`)에도 commit 단계에서 연결되지만, **조건부로 렌더되는 요소**는 마운트되기 전까지 `current`가 `null`입니다. 요소가 나타나고 사라지는 것에 반응해야 한다면 객체 ref 대신 콜백 ref(`ref={(node) => ...}`)가 안전합니다. 콜백 ref는 연결/해제 시점에 정확히 호출됩니다.
+
+### 5. ref는 의존성 배열에 필요 없다 — 하지만 `.current`는 다르다
+
+`ref` 객체 자체는 안정적이라 의존성에 넣지 않아도 됩니다. 반면 cleanup에서 `ref.current`를 읽으면 그 시점에는 이미 다른 노드를 가리킬 수 있으므로, effect 시작 시점에 지역 변수로 복사해 두는 편이 안전합니다.
+
+## 정리
+
+`useRef`의 핵심은 **"리렌더를 일으키지 않고 렌더 사이에 살아남는 가변 상자"** 입니다. DOM 참조는 그 상자를 React가 채워주는 특수한 경우일 뿐입니다.
+
+화면에 영향을 주는 값은 state, 화면과 무관하게 기억만 하면 되는 값은 ref로 두세요. 그리고 ref는 렌더 중이 아니라 핸들러와 effect 안에서만 건드린다는 규칙 하나만 지켜도 대부분의 함정을 피할 수 있습니다.
