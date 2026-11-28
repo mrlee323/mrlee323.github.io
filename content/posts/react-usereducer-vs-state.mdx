@@ -1,0 +1,140 @@
+---
+title: "useReducer vs useState: 상태 전이를 어디에 두느냐의 문제"
+date: "2026-11-28"
+category: "react"
+excerpt: "useState와 useReducer는 사실 같은 엔진 위에 있다. 둘의 진짜 차이는 '상태 전이 로직을 컴포넌트 밖으로 꺼내 이름을 붙일 수 있는가'이며, 이 관점으로 선택 기준을 정리한다."
+tags: ["React", "useReducer", "useState", "상태 관리"]
+readingTime: 7
+---
+
+## useReducer가 존재하는 이유
+
+useState만으로 시작한 컴포넌트는 보통 이렇게 자랍니다.
+
+```tsx
+// src/features/booking/useBooking.ts
+const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+const [data, setData] = useState<Booking | null>(null);
+const [error, setError] = useState<string | null>(null);
+```
+
+문제는 setter가 세 개라는 사실이 아닙니다. **"어떤 조합이 유효한가"라는 규칙이 코드 어디에도 없다는 것**입니다. `status`는 `"success"`인데 `data`는 `null`인 상태를 만드는 코드는 타입 에러도, 런타임 에러도 내지 않습니다. 규칙은 setter를 호출하는 개발자의 머릿속에만 있습니다.
+
+useReducer는 이 문제에 대한 답입니다. 상태를 바꾸는 방법을 **"무슨 일이 일어났는가(action)"** 로만 표현하게 강제하고, 그 일이 상태에 미치는 영향은 한 함수(reducer)에 모읍니다.
+
+> 호출하는 쪽은 "무슨 일이 일어났는지"만 말하고, "그래서 상태가 어떻게 되는지"는 reducer가 결정한다.
+
+## 내부 동작 방식
+
+흥미로운 점은 **useState가 내부적으로 useReducer의 특수한 경우**라는 것입니다. React 소스에서 mount 시점의 useState는 `basicStateReducer`라는 reducer를 가진 훅으로 만들어집니다.
+
+```js
+// React 내부 개념 코드
+function basicStateReducer(state, action) {
+  return typeof action === "function" ? action(state) : action;
+}
+```
+
+`setCount(1)`은 "상태를 1로 교체하라", `setCount(c => c + 1)`은 "함수를 적용하라"는 action일 뿐입니다. 즉 둘은 **같은 update queue, 같은 렌더 스케줄링**을 공유합니다. 성능상 본질적인 차이는 없습니다.
+
+dispatch가 호출되면 흐름은 다음과 같습니다.
+
+```
+dispatch(action)
+  → hook의 update queue에 action 추가
+  → 컴포넌트 리렌더 스케줄
+  → 렌더 중 queue를 순서대로 reducer에 통과시켜 새 상태 계산
+```
+
+여기서 중요한 두 가지가 나옵니다.
+
+1. **reducer는 렌더 단계에서 실행됩니다.** 그래서 순수해야 합니다. StrictMode가 reducer를 두 번 호출하는 이유도 이 때문입니다.
+2. **dispatch의 identity는 렌더 간에 안정적입니다.** setState와 마찬가지로 deps 배열에 넣거나 자식에게 넘겨도 불필요한 재생성이 없습니다. 이 성질이 Context와 만났을 때 큰 의미를 갖습니다.
+
+## 실제로 언제 쓰는가
+
+### 다음 상태가 이전 상태와 여러 필드에 걸쳐 있을 때
+
+```tsx
+type State =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "success"; data: Booking }
+  | { status: "error"; error: string };
+
+type Action =
+  | { type: "fetch" }
+  | { type: "resolved"; data: Booking }
+  | { type: "rejected"; error: string };
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case "fetch":
+      return { status: "loading" };
+    case "resolved":
+      return { status: "success", data: action.data };
+    case "rejected":
+      return { status: "error", error: action.error };
+  }
+}
+```
+
+판별 유니온과 결합하면 `success`인데 `data`가 없는 상태는 **타입 수준에서 표현 자체가 불가능**해집니다. 불가능한 상태를 불가능하게 만드는 것, 이것이 useReducer의 가장 큰 가치입니다.
+
+### 같은 전이를 여러 곳에서 일으킬 때
+
+예약 폼에서 "인원 증가" 버튼, 키보드 단축키, 프리셋 선택이 모두 같은 규칙(최대 9명, 영유아 수 ≤ 성인 수)을 지켜야 한다면, 각 핸들러에 검증을 복붙하는 대신 `dispatch({ type: "addAdult" })` 한 줄로 끝납니다. 규칙은 reducer 한 곳에만 있습니다.
+
+### 테스트가 필요한 로직일 때
+
+reducer는 `(state, action) => state` 순수 함수입니다. 컴포넌트를 렌더링하지 않고 입력과 출력만으로 테스트할 수 있습니다.
+
+### 쓰지 않는 경우
+
+- 독립적인 값 하나 (모달 open, 입력 텍스트)
+- 전이 규칙이 없고 단순 교체만 일어나는 경우
+
+이런 상태에 reducer를 쓰면 `{ type: "setOpen", value }` 처럼 **setter를 action으로 번역한 보일러플레이트**만 남습니다.
+
+## 흔한 오해와 함정
+
+### 1. "useReducer가 더 빠르다"
+
+앞서 봤듯 같은 엔진입니다. 리렌더 횟수도 동일합니다. 다만 `useReducer`를 쓰면 handler가 `dispatch`만 의존하므로 `useCallback` 의존성 관리가 쉬워지는 **간접적인 이점**은 있습니다.
+
+### 2. reducer 안에서 state를 직접 변경
+
+```tsx
+// 수정 전
+case "addItem":
+  state.items.push(action.item); // 같은 참조를 반환
+  return state;
+
+// 수정 후
+case "addItem":
+  return { ...state, items: [...state.items, action.item] };
+```
+
+React는 `Object.is`로 이전 상태와 비교합니다. 같은 참조를 반환하면 리렌더가 **건너뛰어집니다**. 그런데 StrictMode에서는 reducer가 두 번 실행되어 아이템이 두 번 push되는 버그로 나타나 원인을 찾기 더 어렵습니다.
+
+### 3. reducer 안에서 부수효과 실행
+
+reducer에서 API를 호출하거나 `Date.now()`, `Math.random()`을 쓰면 렌더마다 결과가 달라집니다. 시간·ID처럼 비순수한 값은 **action에 담아 dispatch하는 쪽에서 만들어 넘기세요.**
+
+```tsx
+dispatch({ type: "addTodo", id: crypto.randomUUID(), createdAt: Date.now() });
+```
+
+### 4. 모든 이벤트를 action으로 만들기
+
+`{ type: "setName" }`, `{ type: "setEmail" }`, ... 식으로 필드마다 action을 만들면 useState 여러 개와 다를 게 없습니다. action은 **"사용자 입력"이 아니라 "도메인에서 일어난 사건"** 단위로 설계해야 의미가 있습니다.
+
+### 5. 비동기 흐름을 reducer에서 처리하려 함
+
+reducer는 동기·순수 함수입니다. 비동기는 이벤트 핸들러나 effect에서 하고, 결과를 `resolved` / `rejected` action으로 dispatch하세요. 앞의 fetch 예시가 정확히 이 패턴입니다.
+
+## 정리
+
+useState와 useReducer는 성능이 아니라 **"상태 전이 규칙을 어디에 둘 것인가"** 로 갈립니다.
+
+값이 독립적이고 단순하면 useState, 여러 필드가 함께 움직이거나 유효한 상태 조합에 규칙이 있다면 useReducer를 쓰세요. setter를 세 개 이상 같이 호출하는 코드를 발견했다면, 그게 reducer로 옮길 신호입니다.
